@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>横断面设计 — AITS</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    background: linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%);
+    min-height: 100vh;
+    color: #e0e0e0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    text-align: center;
+  }
+  .icon { font-size: 72px; margin-bottom: 24px; }
+  h1 { font-size: 36px; font-weight: 300; letter-spacing: 6px; margin-bottom: 12px; color: #fff; }
+  .sub { color: #8ab4c8; font-size: 15px; margin-bottom: 40px; }
+  .progress {
+    width: 200px;
+    height: 4px;
+    background: rgba(255,255,255,0.1);
+    border-radius: 2px;
+    margin: 0 auto 30px;
+    overflow: hidden;
+  }
+  .progress-bar {
+    height: 100%;
+    width: 20%;
+    background: linear-gradient(90deg, #6ac8ff, #4a90d9);
+    border-radius: 2px;
+    animation: pulse 2s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+  a { color: #6ac8ff; text-decoration: none; font-size: 14px; }
+  a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+  <div class="icon">📐</div>
+  <h1>横断面设计</h1>
+  <p class="sub">道路横断面在线设计工具<br>车道宽度、分隔带、边坡、排水等要素集成</p>
+  <div class="progress"><div class="progress-bar"></div></div>
+  <p style="color:#5a8090;font-size:13px;margin-bottom:40px;">功能开发中，敬请期待</p>
+  <a href="/">← 返回首页</a>
+</body>
+</html>
