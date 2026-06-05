@@ -1,474 +1,520 @@
 /**
- * 横断面设计 - 主控制器
+ * 横断面设计 v3.0 — 主控制器
  */
 (function() {
-    'use strict';
+  'use strict';
 
-    // ==================== 全局状态 ====================
-    let model = new RoadSectionModel();
-    let renderer = null;
-    let canvas = null;
+  // ===== DOM 引用 =====
+  const $ = id => document.getElementById(id);
+  const canvas = $('main-canvas');
+  const container = $('canvas-container');
+  const loading = $('loading-overlay');
 
-    // ==================== 初始化 ====================
+  // ===== 状态 =====
+  let model = null;
+  let renderer = null;
+  let selectedIdx = -1;
+  let prevSelectedIdx = -1;
+  let isDragging = false;
+  let isPanning = false;
+  let dragStart = null;
+  let panStart = null;
+  let currentGrade = 2;
 
-    function init() {
-        canvas = document.getElementById('main-canvas');
-        renderer = new CrossSectionRenderer(canvas, model);
+  // ===== 初始化 =====
+  function init() {
+    renderer = new CrossSectionRenderer(canvas);
+    resizeCanvas();
+    window.addEventListener('resize', resizeCanvas);
+    
+    // 生成默认断面
+    onGenerate();
+    
+    // 事件绑定
+    bindToolbarEvents();
+    bindCanvasEvents();
+    bindBottomToolbar();
+  }
 
-        // 填充道路等级选项
-        const rankSelect = document.getElementById('road-rank-select');
-        RoadRankOptions.forEach((r, i) => {
-            const opt = document.createElement('option');
-            opt.value = i;
-            opt.textContent = r.Name + ' (' + r.Speed + 'km/h)';
-            if (r.Name === '主干路(50)') opt.selected = true;
-            rankSelect.appendChild(opt);
-        });
+  function resizeCanvas() {
+    const w = container.clientWidth;
+    const h = container.clientHeight;
+    canvas.width = w;
+    canvas.height = h;
+    if (model) draw();
+  }
 
-        // 更新参数界面
-        updateParamUI();
-
-        // 自动生成默认断面
-        generateDefault();
-
-        // 绑定事件
-        bindEvents();
-
-        // 初始渲染
-        resizeCanvas();
-        renderer.centerView();
-        renderer.render();
-        updateStatusBar();
+  // ===== 绘制 =====
+  async function draw() {
+    loading.style.display = 'flex';
+    try {
+      await renderer.draw(model, { scale: renderer.scale, offsetX: renderer.offsetX, offsetY: renderer.offsetY });
+      updateInfo();
+    } catch(e) {
+      console.error('绘制错误:', e);
     }
+    loading.style.display = 'none';
+  }
 
-    function resizeCanvas() {
-        const wrapper = document.getElementById('canvas-wrapper');
-        canvas.width = wrapper.clientWidth;
-        canvas.height = wrapper.clientHeight;
+  function updateInfo() {
+    $('info-total-width').textContent = model.totalWidth.toFixed(2) + 'm';
+    $('info-lane-count').textContent = model.totalLaneCount || '--';
+    $('info-redline').textContent = (model.redLineWidth || '--') + 'm';
+    $('status-zoom').textContent = Math.round(renderer.scale * 100) + '%';
+    
+    // 更新元素列表
+    const list = $('element-list');
+    list.innerHTML = model.EleList.map((el, i) => {
+      const name = el.EleTypeName || '未知';
+      return `<div class="elem-item${i===selectedIdx?' selected':''}" data-idx="${i}">${name} ${el.EleWidth.toFixed(2)}m</div>`;
+    }).join('');
+    
+    // 列表点击
+    list.querySelectorAll('.elem-item').forEach(item => {
+      item.addEventListener('click', () => {
+        const idx = parseInt(item.dataset.idx);
+        selectElement(idx);
+      });
+    });
+    
+    // 更新属性面板
+    updatePropPanel();
+  }
+
+  // ===== 断面生成 =====
+  function onGenerate() {
+    const grade = parseInt($('sel-grade').value);
+    currentGrade = grade;
+    model = RoadSectionModel.createFromGrade(grade);
+    model.redLineWidth = parseFloat($('input-redline').value) || 40;
+    
+    selectedIdx = -1;
+    $('right-panel').style.display = 'none';
+    $('btn-delete').disabled = true;
+    fitToScreen();
+    draw();
+  }
+
+  function fitToScreen() {
+    const roadPx = model.totalWidth * CFG.SCALE;
+    const totalW = roadPx + CFG.SIDE_WIDTH * 2 + CFG.PADDING * 2;
+    const totalH = CFG.ROAD_Y + CFG.BASE_EXTRA + CFG.PADDING;
+    
+    const fitScale = Math.min(
+      container.clientWidth / totalW,
+      container.clientHeight / totalH,
+      1.5
+    ) * 0.85;
+    
+    renderer.scale = Math.max(0.2, Math.min(fitScale, 2.0));
+    renderer.offsetX = (container.clientWidth - totalW * renderer.scale) / 2;
+    renderer.offsetY = (container.clientHeight - totalH * renderer.scale) / 2;
+  }
+
+  // ===== 元素操作 =====
+  function addElement(type, userDefineType) {
+    const el = RoadSectionModel.createElement(type, userDefineType);
+    if (!el) return;
+    
+    const insertAt = selectedIdx >= 0 ? selectedIdx + 1 : model.EleList.length;
+    model.EleList.splice(insertAt, 0, el);
+    model.recalc();
+    
+    if (selectedIdx >= 0) selectElement(insertAt);
+    draw();
+  }
+
+  function deleteElement(index) {
+    if (index < 0 || index >= model.EleList.length) return;
+    model.EleList.splice(index, 1);
+    model.recalc();
+    selectElement(-1);
+    draw();
+  }
+
+  function updateElementProp(index, prop, value) {
+    if (index < 0 || index >= model.EleList.length) return;
+    const el = model.EleList[index];
+    
+    // 映射简化属性名到真实属性名
+    const propMap = {
+      width: 'EleWidth',
+      height: 'EleHeight',
+      surfaceType: 'SurfaceStyleIndex',
+      direction: 'Direction',
+      arrowDirection: 'ArrowDirection',
+      isoType: '_isoBeltType',
+      hasBarrier: '_hasBarrier',
+      hasTree: '_hasTree',
+      userDefineType: '_userDefineType',
+      turnCount: null
+    };
+    
+    if (prop === 'turnCount') {
+      if (el instanceof VehicleElement) {
+        if (el.Direction === 'In') model.RoadInputPara.InLaneNo = Math.max(1, value);
+        else model.RoadInputPara.OutLaneNo = Math.max(1, value);
+        model.RoadInputPara.LaneNo = model.RoadInputPara.InLaneNo + model.RoadInputPara.OutLaneNo;
+      }
+    } else if (prop === 'isoType') {
+      el._isoBeltType = value;
+      el._eleType = value;
+      el.InitAttachmentsByWidth();
+    } else {
+      const realProp = propMap[prop] || prop;
+      el[realProp] = value;
     }
+    
+    model.recalc();
+    draw();
+  }
 
-    function generateDefault() {
-        const rankIdx = parseInt(document.getElementById('road-rank-select').value);
-        model.RoadInputPara.Rank = RoadRankOptions[rankIdx].clone();
-        model.RoadInputPara.LaneNo = parseInt(document.getElementById('lane-count-select').value);
-        model.RoadInputPara.InLaneNo = Math.ceil(model.RoadInputPara.LaneNo / 2);
-        model.RoadInputPara.OutLaneNo = model.RoadInputPara.LaneNo - model.RoadInputPara.InLaneNo;
-        model.RoadInputPara.RedLineLength = parseFloat(document.getElementById('redline-input').value);
-
-        model.InitSectionSeries();
-        model.CalculateElementWidth();
-        updateParamUI();
+  function selectElement(index) {
+    prevSelectedIdx = selectedIdx;
+    selectedIdx = index;
+    $('btn-delete').disabled = index < 0;
+    
+    if (index >= 0) {
+      $('right-panel').style.display = 'block';
+    } else {
+      $('right-panel').style.display = 'none';
     }
+    
+    updateInfo();
+  }
 
-    function updateParamUI() {
-        document.getElementById('speed-input').value = model.Speed;
-        document.getElementById('redline-input').value = model.RedLineLength;
-        document.getElementById('lane-count-select').value = model.RoadInputPara.LaneNo;
-        document.getElementById('total-width-display').textContent = model.TotalWidth.toFixed(2);
-        document.getElementById('road-name-input').value = model.RoadName || '';
+  function updatePropPanel() {
+    if (selectedIdx < 0) return;
+    const el = model.EleList[selectedIdx];
+    const pc = $('prop-content');
+    const typeName = el.EleTypeName || '未知';
+    
+    let html = `
+      <div class="prop-row"><span class="prop-label">类型</span><span style="color:#e0e0e0">${typeName}</span></div>
+      <div class="prop-row">
+        <span class="prop-label">宽度(m)</span>
+        <input class="prop-input prop-input-sm" type="number" value="${el.EleWidth}" step="0.25" min="0.5" 
+          onchange="window._updateProp('width', parseFloat(this.value))">
+      </div>
+      <div class="prop-row">
+        <span class="prop-label">高度(m)</span>
+        <input class="prop-input prop-input-sm" type="number" value="${el.EleHeight}" step="0.1" min="-15" max="15"
+          onchange="window._updateProp('height', parseFloat(this.value))">
+      </div>
+      <div class="prop-row">
+        <span class="prop-label">地表样式</span>
+        <select class="prop-select" onchange="window._updateProp('surfaceType', parseInt(this.value))">
+          <option value="0" ${(el.SurfaceStyleIndex)===0?'selected':''}>沥青深色</option>
+          <option value="1" ${el.SurfaceStyleIndex===1?'selected':''}>沥青红色</option>
+          <option value="2" ${el.SurfaceStyleIndex===2?'selected':''}>沥青绿色</option>
+          <option value="3" ${el.SurfaceStyleIndex===3?'selected':''}>灰色砖</option>
+          <option value="4" ${el.SurfaceStyleIndex===4?'selected':''}>红色砖</option>
+          <option value="5" ${el.SurfaceStyleIndex===5?'selected':''}>水泥</option>
+          <option value="7" ${el.SurfaceStyleIndex===7?'selected':''}>泥土</option>
+          <option value="8" ${el.SurfaceStyleIndex===8?'selected':''}>木纹</option>
+        </select>
+      </div>
+    `;
+    
+    if (el instanceof VehicleElement) {
+      const laneCount = el.Direction === 'In' ? model.RoadInputPara.InLaneNo : model.RoadInputPara.OutLaneNo;
+      html += `
+        <div class="prop-row">
+          <span class="prop-label">车道数</span>
+          <input class="prop-input prop-input-sm" type="number" value="${laneCount}" step="1" min="1" max="8"
+            onchange="window._updateProp('turnCount', parseInt(this.value))">
+        </div>
+        <div class="prop-row">
+          <span class="prop-label">方向</span>
+          <select class="prop-select" onchange="window._updateProp('direction', this.value)">
+            <option value="Out" ${el.Direction==='Out'?'selected':''}>出口道</option>
+            <option value="In" ${el.Direction==='In'?'selected':''}>进口道</option>
+          </select>
+        </div>
+        <div class="prop-row">
+          <span class="prop-label">箭头方向</span>
+          <select class="prop-select" onchange="window._updateProp('arrowDirection', this.value)">
+            <option value="S" ${el.ArrowDirection==='S'?'selected':''}>直行 S</option>
+            <option value="L" ${el.ArrowDirection==='L'?'selected':''}>左转 L</option>
+            <option value="R" ${el.ArrowDirection==='R'?'selected':''}>右转 R</option>
+            <option value="U" ${el.ArrowDirection==='U'?'selected':''}>掉头 U</option>
+            <option value="LS" ${el.ArrowDirection==='LS'?'selected':''}>左直 LS</option>
+            <option value="LR" ${el.ArrowDirection==='LR'?'selected':''}>左右 LR</option>
+            <option value="SR" ${el.ArrowDirection==='SR'?'selected':''}>直右 SR</option>
+          </select>
+        </div>
+      `;
+    }
+    
+    if (el instanceof IsoBeltElement) {
+      html += `
+        <div class="prop-row">
+          <span class="prop-label">隔离类型</span>
+          <select class="prop-select" onchange="window._updateProp('isoType', parseInt(this.value))">
+            <option value="11" ${el.IsoBeltType===11?'selected':''}>中央隔离</option>
+            <option value="12" ${el.IsoBeltType===12?'selected':''}>同向隔离</option>
+            <option value="13" ${el.IsoBeltType===13?'selected':''}>机非隔离</option>
+            <option value="14" ${el.IsoBeltType===14?'selected':''}>慢行隔离</option>
+            <option value="15" ${el.IsoBeltType===15?'selected':''}>人机隔离</option>
+          </select>
+        </div>
+        <div class="prop-row">
+          <span class="prop-label"><input class="prop-check" type="checkbox" ${el.HasBarrier?'checked':''} 
+            onchange="window._updateProp('hasBarrier', this.checked)"> 防护栏</span>
+        </div>
+        <div class="prop-row">
+          <span class="prop-label"><input class="prop-check" type="checkbox" ${el.HasTree?'checked':''} 
+            onchange="window._updateProp('hasTree', this.checked)"> 乔木</span>
+        </div>
+      `;
+    }
+    
+    if (el instanceof UserDefineElement) {
+      html += `
+        <div class="prop-row">
+          <span class="prop-label">自定义类型</span>
+          <select class="prop-select" onchange="window._updateProp('userDefineType', this.value)">
+            <option value="Overpass" ${el.UserDefineType==='Overpass'?'selected':''}>高架</option>
+            <option value="Water" ${el.UserDefineType==='Water'?'selected':''}>河流</option>
+            <option value="ParkLane" ${el.UserDefineType==='ParkLane'?'selected':''}>停车带</option>
+            <option value="URoadface" ${el.UserDefineType==='URoadface'?'selected':''}>自定义路面</option>
+          </select>
+        </div>
+      `;
+    }
+    
+    pc.innerHTML = html;
+    
+    window._updateProp = (prop, value) => {
+      updateElementProp(selectedIdx, prop, value);
+    };
+    window._changeTurn = (idx, value) => {
+      const cel = model.EleList[selectedIdx];
+      if (cel && cel.ArrowDirection !== undefined) {
+        cel.ArrowDirection = value;
+        model.recalc();
+        draw();
+      }
+    };
+  }
 
-        // 道路等级
-        const rankSelect = document.getElementById('road-rank-select');
-        const currentRankName = model.RoadInputPara.Rank.Name;
-        for (let i = 0; i < rankSelect.options.length; i++) {
-            if (rankSelect.options[i].textContent.includes(currentRankName)) {
-                rankSelect.value = i;
-                break;
-            }
+  // ===== 工具栏事件 =====
+  function bindToolbarEvents() {
+    $('btn-generate').addEventListener('click', () => {
+      model.redLineWidth = parseFloat($('input-redline').value) || 40;
+      onGenerate();
+    });
+    $('btn-recalc').addEventListener('click', () => {
+      model.redLineWidth = parseFloat($('input-redline').value) || 40;
+      model.recalc();
+      draw();
+    });
+    $('btn-center').addEventListener('click', fitToScreen);
+    
+    $('sel-grade').addEventListener('change', () => {
+      model.redLineWidth = parseFloat($('input-redline').value) || 40;
+      onGenerate();
+    });
+    
+    $('sel-style').addEventListener('change', () => {
+      const v = parseInt($('sel-style').value);
+      renderer.styleId = v;
+      draw();
+    });
+    
+    $('input-redline').addEventListener('change', () => {
+      model.redLineWidth = parseFloat($('input-redline').value) || 40;
+      draw();
+    });
+    
+    // 新建
+    $('btn-new').addEventListener('click', () => {
+      if (confirm('确定新建断面？当前未保存的内容将丢失。')) {
+        model = new RoadSectionModel();
+        model.redLineWidth = parseFloat($('input-redline').value) || 40;
+        selectElement(-1);
+        fitToScreen();
+        draw();
+      }
+    });
+    
+    // 保存JSON
+    $('btn-save').addEventListener('click', () => {
+      const json = JSON.stringify(model.toJSON(), null, 2);
+      const blob = new Blob([json], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'cross_section.json';
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+    
+    // 打开JSON
+    $('btn-open').addEventListener('click', () => $('file-open').click());
+    $('file-open').addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        try {
+          const data = JSON.parse(ev.target.result);
+          model = RoadSectionModel.fromJSON(data);
+          selectElement(-1);
+          fitToScreen();
+          draw();
+        } catch(err) {
+          alert('文件解析失败: ' + err.message);
         }
-    }
-
-    function updateStatusBar() {
-        document.getElementById('zoom-display').textContent = Math.round(renderer.scale * 100);
-        document.getElementById('total-width-display').textContent = model.TotalWidth.toFixed(2);
-    }
-
-    // ==================== 属性面板 ====================
-
-    function updatePropPanel() {
-        const panel = document.getElementById('prop-content');
-        if (renderer.selectedIndex < 0 || renderer.selectedIndex >= model.EleList.length) {
-            panel.innerHTML = '<div class="no-selection">点击选中断面元素</div>';
-            return;
-        }
-
-        const el = model.EleList[renderer.selectedIndex];
-        panel.innerHTML = `
-            <div class="prop-row"><label>类型</label><span>${el.EleTypeName}</span></div>
-            <div class="prop-row">
-                <label>宽度(m)</label>
-                <input type="number" id="prop-width" value="${el.EleWidth.toFixed(2)}"
-                       min="${el.MinWidth}" max="${el.MaxWidth}" step="0.25">
-            </div>
-            <div class="prop-row">
-                <label>高度(m)</label>
-                <input type="number" id="prop-height" value="${el.EleHeight.toFixed(2)}"
-                       min="${el.MinHeight}" max="${el.MaxHeight}" step="0.1">
-            </div>
-            <div class="prop-row">
-                <label>方向</label>
-                <select id="prop-direction">
-                    <option value="In" ${el.Direction === 'In' ? 'selected' : ''}>进口</option>
-                    <option value="Out" ${el.Direction === 'Out' ? 'selected' : ''}>出口</option>
-                    <option value="NoDirection" ${el.Direction === 'NoDirection' ? 'selected' : ''}>无</option>
-                </select>
-            </div>
-            <div class="prop-row">
-                <label>锁定</label>
-                <input type="checkbox" id="prop-locked" ${el.IsLocked ? 'checked' : ''}>
-            </div>
-            <div class="prop-row">
-                <label>地表样式</label>
-                <select id="prop-surface-style"></select>
-            </div>
-            ${(el instanceof IsoBeltElement) ? `
-            <div class="prop-row"><label>隔离类型</label><span>${IsoBeltTypeName(el._isoBeltType)}</span></div>
-            <div class="prop-row"><label>护栏</label><input type="checkbox" id="prop-barrier" ${el.HasBarrier?'checked':''}></div>
-            <div class="prop-row"><label>灌木</label><input type="checkbox" id="prop-bush" ${el.HasBush?'checked':''}></div>
-            <div class="prop-row"><label>乔木</label><input type="checkbox" id="prop-tree" ${el.HasTree?'checked':''}></div>
-            <div class="prop-row"><label>路灯</label><input type="checkbox" id="prop-lamp" ${el.HasLamp?'checked':''}></div>
-            ` : ''}
-        `;
-
-        // 填充地表样式选项
-        const styleSelect = document.getElementById('prop-surface-style');
-        if (styleSelect) {
-            const styles = StyleSurfaceTypes[model.StyleIndex];
-            styles.forEach((s, i) => {
-                const opt = document.createElement('option');
-                opt.value = i;
-                opt.textContent = s.name;
-                if (i === el.SurfaceStyleIndex) opt.selected = true;
-                styleSelect.appendChild(opt);
-            });
-        }
-
-        // 绑定属性修改事件
-        bindPropEvents(el);
-    }
-
-    function bindPropEvents(el) {
-        const widthInput = document.getElementById('prop-width');
-        if (widthInput) {
-            widthInput.addEventListener('input', () => {
-                el.EleWidth = parseFloat(widthInput.value) || el.EleWidth;
-                renderer.render();
-                updateStatusBar();
-            });
-        }
-
-        const heightInput = document.getElementById('prop-height');
-        if (heightInput) {
-            heightInput.addEventListener('input', () => {
-                el.EleHeight = parseFloat(heightInput.value) || el.EleHeight;
-                renderer.render();
-            });
-        }
-
-        const dirSelect = document.getElementById('prop-direction');
-        if (dirSelect) {
-            dirSelect.addEventListener('change', () => {
-                el.Direction = dirSelect.value;
-                renderer.render();
-            });
-        }
-
-        const lockCheck = document.getElementById('prop-locked');
-        if (lockCheck) {
-            lockCheck.addEventListener('change', () => {
-                el.EleLock = lockCheck.checked ? EleLock.Lock : EleLock.UnLock;
-                renderer.render();
-            });
-        }
-
-        const styleSelect = document.getElementById('prop-surface-style');
-        if (styleSelect) {
-            styleSelect.addEventListener('change', () => {
-                el.SurfaceStyleIndex = parseInt(styleSelect.value);
-                renderer.render();
-            });
-        }
-
-        // 隔离带附件
-        ['barrier', 'bush', 'tree', 'lamp'].forEach(attr => {
-            const cb = document.getElementById(`prop-${attr}`);
-            if (cb && el instanceof IsoBeltElement) {
-                cb.addEventListener('change', () => {
-                    el.SetIsobeltType(
-                        document.getElementById('prop-bush')?.checked || false,
-                        document.getElementById('prop-tree')?.checked || false,
-                        document.getElementById('prop-barrier')?.checked || false,
-                        document.getElementById('prop-lamp')?.checked || false
-                    );
-                    renderer.render();
-                });
-            }
-        });
-    }
-
-    function IsoBeltTypeName(type) {
-        const names = { 11: '中央隔离', 12: '同向隔离', 13: '机非隔离', 14: '慢行隔离', 15: '人机隔离' };
-        return names[type] || '未知';
-    }
-
-    // ==================== 事件绑定 ====================
-
-    function bindEvents() {
-        // 生成
-        document.getElementById('btn-generate').addEventListener('click', () => {
-            generateDefault();
-            renderer.selectedIndex = -1;
-            updatePropPanel();
-            renderer.centerView();
-            renderer.render();
-            updateStatusBar();
-        });
-
-        // 参数联动
-        document.getElementById('road-rank-select').addEventListener('change', function() {
-            const rank = RoadRankOptions[parseInt(this.value)];
-            document.getElementById('speed-input').value = rank.Speed;
-            document.getElementById('redline-input').value = rank.RedLineMin || 30;
-        });
-
-        document.getElementById('speed-input').addEventListener('change', function() {
-            model.RoadInputPara.Rank.Speed = parseInt(this.value) || 50;
-        });
-
-        document.getElementById('redline-input').addEventListener('change', function() {
-            model.RedLineLength = parseFloat(this.value) || 40;
-        });
-
-        // 居中
-        document.getElementById('btn-center').addEventListener('click', () => {
-            renderer.centerView();
-            renderer.render();
-            updateStatusBar();
-        });
-
-        // 切换风格
-        document.getElementById('btn-style').addEventListener('click', () => {
-            model.StyleIndex = (model.StyleIndex + 1) % 2;
-            renderer.render();
-        });
-
-        // 切换标注
-        document.getElementById('btn-toggle-dim').addEventListener('click', () => {
-            renderer.showDimensions = !renderer.showDimensions;
-            renderer.render();
-        });
-
-        // 导出PNG
-        document.getElementById('btn-export-png').addEventListener('click', exportPNG);
-
-        // 保存
-        document.getElementById('btn-save').addEventListener('click', saveFile);
-
-        // 打开
-        document.getElementById('btn-load').addEventListener('click', () => {
-            document.getElementById('file-input').click();
-        });
-
-        document.getElementById('file-input').addEventListener('change', loadFile);
-
-        // 删除
-        document.getElementById('btn-delete').addEventListener('click', () => {
-            renderer.deleteSelected();
-            updatePropPanel();
-            updateStatusBar();
-        });
-
-        // 道路名称
-        document.getElementById('road-name-input').addEventListener('input', function() {
-            model.RoadName = this.value;
-        });
-
-        // 添加元素按钮
-        document.querySelectorAll('#side-panel .add-btn').forEach(btn => {
-            btn.addEventListener('click', function() {
-                const eleType = this.dataset.ele;
-                addNewElement(eleType);
-            });
-        });
-
-        // Canvas 事件
-        canvas.addEventListener('mousedown', (e) => {
-            renderer.onMouseDown(e.clientX, e.clientY, e.button);
-            updatePropPanel();
-        });
-
-        canvas.addEventListener('mousemove', (e) => {
-            renderer.onMouseMove(e.clientX, e.clientY);
-            updateStatusBar();
-            // 显示坐标
-            const world = renderer.screenToWorld(e.clientX, e.clientY);
-            document.getElementById('coord-display').textContent =
-                `(${world.x.toFixed(0)}, ${world.y.toFixed(0)})`;
-        });
-
-        canvas.addEventListener('mouseup', () => {
-            renderer.onMouseUp();
-        });
-
-        canvas.addEventListener('mouseleave', () => {
-            renderer.onMouseUp();
-        });
-
-        canvas.addEventListener('wheel', (e) => {
-            e.preventDefault();
-            renderer.onWheel(e.clientX, e.clientY, e.deltaY);
-            updateStatusBar();
-        }, { passive: false });
-
-        // 键盘
-        document.addEventListener('keydown', (e) => {
-            if (e.key === 'Delete' || e.key === 'Del') {
-                renderer.deleteSelected();
-                updatePropPanel();
-                updateStatusBar();
-            }
-            if (e.key === 'Escape') {
-                renderer.selectedIndex = -1;
-                updatePropPanel();
-                renderer.render();
-            }
-        });
-
-        // 窗口大小
-        window.addEventListener('resize', () => {
-            resizeCanvas();
-            renderer.render();
-        });
-    }
-
-    // ==================== 添加元素 ====================
-
-    function addNewElement(eleType) {
-        let el = null;
-        const insertIndex = renderer.selectedIndex >= 0 ? renderer.selectedIndex + 1 : model.EleList.length;
-
-        switch (eleType) {
-            case 'car':
-                el = new VehicleElement(3, SectionElementDir.In);
-                break;
-            case 'bus':
-                el = new VehicleElement(5, SectionElementDir.In);
-                break;
-            case 'truck':
-                el = new VehicleElement(4, SectionElementDir.In);
-                break;
-            case 'tramcar':
-                el = new VehicleElement(18, SectionElementDir.In);
-                break;
-            case 'pedestrian':
-                el = new PedestrianElement();
-                break;
-            case 'bicycle':
-                el = new BicycleElement(SectionElementDir.In);
-                break;
-            case 'busstop':
-                el = new BusStopElement(9);
-                break;
-            case 'isobelt':
-                el = new IsoBeltElement(IsoBeltType.BicVeh);
-                el.InitAttachmentsByWidth();
-                break;
-            case 'overpass':
-                el = new UserDefineElement(UserDefineType.Overpass, ImageLocation.Center);
-                break;
-            case 'water':
-                el = new UserDefineElement(UserDefineType.Water, ImageLocation.Center);
-                break;
-            case 'park':
-                el = new UserDefineElement(UserDefineType.ParkLane, ImageLocation.Center);
-                break;
-            default:
-                return;
-        }
-
-        if (el) {
-            el.EleWidth = getDefaultWidth(eleType);
-            model.AddElement(el, insertIndex);
-            renderer.selectedIndex = insertIndex;
-            updatePropPanel();
-            renderer.render();
-            updateStatusBar();
-        }
-    }
-
-    function getDefaultWidth(eleType) {
-        const defaults = {
-            car: 3.5, bus: 3.5, truck: 3.75, tramcar: 3.5,
-            pedestrian: 3.0, bicycle: 2.5, busstop: 2.0,
-            isobelt: 1.0, overpass: 5.0, water: 5.0, park: 2.5
-        };
-        return defaults[eleType] || 2.0;
-    }
-
-    // ==================== 文件操作 ====================
-
-    function exportPNG() {
-        // 创建离屏 canvas 用于高质量导出
-        const offscreen = document.createElement('canvas');
-        const scale = 2;
-        const pw = renderer.properWidth;
-        const ph = renderer.properHeight + 80;
-
-        offscreen.width = pw * scale;
-        offscreen.height = ph * scale;
-
-        const tempRenderer = new CrossSectionRenderer(offscreen, model);
-        tempRenderer.scale = scale;
-        tempRenderer.translateX = 0;
-        tempRenderer.translateY = 0;
-        tempRenderer.showDimensions = true;
-        tempRenderer.render();
-
-        offscreen.toBlob(blob => {
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = '横断面_' + (model.RoadName || '未命名') + '.png';
-            a.click();
-            URL.revokeObjectURL(url);
+      };
+      reader.readAsText(file);
+      e.target.value = '';
+    });
+    
+    // 导出PNG
+    $('btn-export-png').addEventListener('click', async () => {
+      // 用更大的分辨率重新渲染
+      const oldScale = renderer.scale;
+      const oldOffX = renderer.offsetX;
+      const oldOffY = renderer.offsetY;
+      
+      const exportCanvas = document.createElement('canvas');
+      exportCanvas.width = 2400;
+      exportCanvas.height = 1600;
+      
+      const exportRenderer = new CrossSectionRenderer(exportCanvas);
+      exportRenderer.styleId = renderer.styleId;
+      
+      try {
+        await exportRenderer.draw(model, { scale: 1.2, offsetX: 100, offsetY: 50 });
+        
+        exportCanvas.toBlob((blob) => {
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = 'cross_section.png';
+          a.click();
+          URL.revokeObjectURL(url);
         }, 'image/png');
-    }
+      } catch(e) {
+        console.error('导出失败:', e);
+      }
+    });
+  }
 
-    function saveFile() {
-        const json = model.toJSON();
-        const blob = new Blob([JSON.stringify(json, null, 2)], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = '横断面_' + (model.RoadName || '未命名') + '.json';
-        a.click();
-        URL.revokeObjectURL(url);
-    }
+  // ===== 底部工具栏 =====
+  function bindBottomToolbar() {
+    $('bottom-toolbar').addEventListener('click', (e) => {
+      const btn = e.target.closest('.elem-btn');
+      if (!btn) return;
+      
+      const type = btn.dataset.type;
+      const ud = btn.dataset.ud;
+      
+      if (btn.id === 'btn-delete') {
+        if (selectedIdx >= 0) deleteElement(selectedIdx);
+      } else if (type) {
+        addElement(type, ud || null);
+      }
+    });
+  }
 
-    function loadFile(e) {
-        const file = e.target.files[0];
-        if (!file) return;
+  // ===== Canvas 交互 =====
+  function bindCanvasEvents() {
+    canvas.addEventListener('mousedown', (e) => {
+      if (e.button === 1 || (e.button === 0 && e.ctrlKey)) {
+        // 中键或 Ctrl+左键 → 平移
+        isPanning = true;
+        panStart = { x: e.clientX - renderer.offsetX, y: e.clientY - renderer.offsetY };
+        e.preventDefault();
+        return;
+      }
+      
+      if (e.button === 0) {
+        // 点击检测
+        const rect = canvas.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+        
+        const hitIdx = renderer.hitTest(mx, my);
+        
+        if (hitIdx >= 0) {
+          selectElement(hitIdx);
+          // 允许拖拽调整
+          isDragging = false;
+          dragStart = { x: e.clientX, y: e.clientY, idx: hitIdx };
+        } else {
+          selectElement(-1);
+          // 空白区域 → 准备平移
+          isPanning = true;
+          panStart = { x: e.clientX - renderer.offsetX, y: e.clientY - renderer.offsetY };
+        }
+      }
+    });
+    
+    window.addEventListener('mousemove', (e) => {
+      if (isPanning) {
+        renderer.offsetX = e.clientX - panStart.x;
+        renderer.offsetY = e.clientY - panStart.y;
+        draw();
+        return;
+      }
+      
+      if (dragStart) {
+        const dx = e.clientX - dragStart.x;
+        if (Math.abs(dx) > 3) {
+          isDragging = true;
+        }
+      }
+      
+      // 悬停检测
+      if (!isDragging && !isPanning) {
+        const rect = canvas.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+        const hitIdx = renderer.hitTest(mx, my);
+        canvas.classList.toggle('pointing', hitIdx >= 0 && hitIdx !== selectedIdx);
+      }
+    });
+    
+    window.addEventListener('mouseup', () => {
+      isPanning = false;
+      isDragging = false;
+      dragStart = null;
+    });
+    
+    // 滚轮缩放
+    canvas.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      
+      const zoomFactor = e.deltaY < 0 ? 1.08 : 1 / 1.08;
+      const newScale = Math.max(0.15, Math.min(renderer.scale * zoomFactor, 3.0));
+      
+      // 以鼠标位置为中心缩放
+      const actualZoom = newScale / renderer.scale;
+      renderer.offsetX = mx - (mx - renderer.offsetX) * actualZoom;
+      renderer.offsetY = my - (my - renderer.offsetY) * actualZoom;
+      renderer.scale = newScale;
+      
+      draw();
+    }, { passive: false });
+    
+    // 键盘删除
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (selectedIdx >= 0 && document.activeElement === document.body) {
+          deleteElement(selectedIdx);
+        }
+      }
+      if (e.key === 'Escape') {
+        selectElement(-1);
+      }
+    });
+  }
 
-        const reader = new FileReader();
-        reader.onload = (ev) => {
-            try {
-                const json = JSON.parse(ev.target.result);
-                model = RoadSectionModel.fromJSON(json);
-                renderer.model = model;
-                updateParamUI();
-                renderer.selectedIndex = -1;
-                updatePropPanel();
-                renderer.centerView();
-                renderer.render();
-                updateStatusBar();
-            } catch (err) {
-                alert('文件解析失败: ' + err.message);
-            }
-        };
-        reader.readAsText(file);
-        e.target.value = '';
-    }
-
-    // ==================== 启动 ====================
-    window.addEventListener('DOMContentLoaded', init);
+  // ===== 启动 =====
+  init();
 })();

@@ -1,835 +1,1056 @@
 /**
- * 横断面设计 - Canvas 2D 渲染引擎
- * 从 WPF ImageDrawer/ZoomCanvus 迁移
+ * 横断面设计 - Canvas 2D 渲染引擎 v3.0
+ * 完全对齐桌面版视觉质量
+ * 使用原始项目图片资源进行渲染
  */
 
+// ============ 图片缓存管理器 ============
+class ImageCache {
+  constructor() {
+    this._images = {};
+    this._loadCount = 0;
+    this._totalCount = 0;
+  }
+
+  /** 预加载图片 */
+  load(src) {
+    if (this._images[src]) return this._images[src];
+    const img = new Image();
+    img.src = src;
+    this._images[src] = img;
+    this._totalCount++;
+    return img;
+  }
+
+  /** 获取已加载的图片 */
+  get(src) {
+    return this._images[src] || null;
+  }
+
+  /** 等待所有图片加载完成 */
+  waitAll() {
+    const promises = Object.values(this._images).map(img => {
+      if (img.complete) return Promise.resolve();
+      return new Promise(resolve => { img.onload = resolve; img.onerror = resolve; });
+    });
+    return Promise.all(promises);
+  }
+}
+
+// ============ 配置常量 ============
+const CFG = {
+  SCALE: 16,            // 像素/米
+  ROAD_Y: 420,          // 路面线Y坐标
+  SIDE_WIDTH: 280,      // 侧边景观带宽度(px)
+  SKY_TOP: 0,           // 天空顶部
+  BUILDING_Y: 120,      // 建筑起始Y
+  BUILDING_HEIGHT: 300, // 建筑区域高度
+  BASE_EXTRA: 200,      // 地基下方延伸
+  PADDING: 100,         // 画布内边距
+  
+  // 颜色
+  COLOR_SKY_TOP: '#4A90D9',
+  COLOR_SKY_BOT: '#C5DFF8',
+  COLOR_GROUND: '#E8E4DC',
+  COLOR_BASE_FILL: '#E6E6E6',
+  COLOR_ASPHALT: '#5A5A5A',
+  COLOR_CENTER_LINE: '#F0C040',
+  COLOR_LANE_LINE: '#FFFFFF',
+  COLOR_RED_LINE: '#D2461C',
+  COLOR_DIM_LINE: '#393939',
+  COLOR_DIRT: '#DCDCDC',
+  COLOR_GREEN: '#4CAF50',
+  
+  // 样式路径
+  BASE_PATH: 'images/',
+};
+
+// ============ 辅助函数 ============
+function px(meters) { return meters * CFG.SCALE; }
+function mp(pixels) { return pixels / CFG.SCALE; }
+
+// ============ 主渲染器 ============
 class CrossSectionRenderer {
-    /**
-     * @param {HTMLCanvasElement} canvas
-     * @param {RoadSectionModel} model
-     */
-    constructor(canvas, model) {
-        this.canvas = canvas;
-        this.ctx = canvas.getContext('2d');
-        this.model = model;
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
+    this.cache = new ImageCache();
+    this.styleId = 1; // 0=实景, 1=剪影
+    
+    // 画布逻辑尺寸
+    this.logicalW = 2000;
+    this.logicalH = 800;
+    
+    // 视图变换
+    this.scale = 1.0;
+    this.offsetX = 0;
+    this.offsetY = 0;
+    
+    // 交互状态
+    this.selectedIndex = -1;
+    this.hoveredIndex = -1;
+    this.dragInfo = null;
+    
+    this._preloadImages();
+  }
 
-        // 缩放/平移状态
-        this.scale = 1;
-        this.translateX = 0;
-        this.translateY = 0;
-        this.minScale = 0.3;
-        this.maxScale = 3.0;
+  // ---- 图片预加载 ----
+  _preloadImages() {
+    const B = CFG.BASE_PATH;
+    // 天空
+    this.cache.load(B + 'sky/0.jpg');
+    // 纹理
+    ['AsphaltDark','AsphaltRed','AsphaltGreen','BrickGray','BrickRed','Cement','Earth','Water','Wood'].forEach(t => {
+      this.cache.load(B + 'fill/' + t + '.png');
+    });
+    // 箭头
+    ['S','L','R','U','UL','US','LS','LR','SR','Park','None'].forEach(a => {
+      this.cache.load(B + 'arrows/' + a + '.png');
+    });
+    // 建筑
+    this._houseImages = [0,1,2,3,4,5,6,7].map(i => {
+      const src = B + 'sideview/House/' + i + '-*.png';
+      // 实际文件名固定
+      const widths = [1000,1000,640,900,900,800,800,850];
+      const realSrc = B + 'sideview/House/' + i + '-' + widths[i] + '.png';
+      this.cache.load(realSrc);
+      return { idx: i, width: widths[i], src: realSrc };
+    });
+    // 树木
+    this.cache.load(B + 'sideview/Woods/0-1000.png');
+    this.cache.load(B + 'sideview/Grass/0-400.png');
+    this.cache.load(B + 'sideview/Grass/1-1000.png');
+    // 灌木
+    this.cache.load(B + 'style1/ElementImage/Bush/0.png');
+    // 路灯
+    this.cache.load(B + 'style1/ElementImage/Lamp/0.png');
+    // 防护栏
+    this.cache.load(B + 'style1/ElementImage/Barrier/0.png');
+  }
 
-        // 拖动状态
-        this.isDragging = false;
-        this.dragStartX = 0;
-        this.dragStartY = 0;
-        this.dragTranslateX = 0;
-        this.dragTranslateY = 0;
+  _getFillImage(textureName) {
+    switch(textureName) {
+      case 'AsphaltDark': return this.cache.get(CFG.BASE_PATH + 'fill/AsphaltDark.png');
+      case 'AsphaltRed': return this.cache.get(CFG.BASE_PATH + 'fill/AsphaltRed.png');
+      case 'AsphaltGreen': return this.cache.get(CFG.BASE_PATH + 'fill/AsphaltGreen.png');
+      case 'BrickGray': return this.cache.get(CFG.BASE_PATH + 'fill/BrickGray.png');
+      case 'BrickRed': return this.cache.get(CFG.BASE_PATH + 'fill/BrickRed.png');
+      case 'Cement': return this.cache.get(CFG.BASE_PATH + 'fill/Cement.png');
+      case 'Earth': return this.cache.get(CFG.BASE_PATH + 'fill/Earth.png');
+      case 'Water': return this.cache.get(CFG.BASE_PATH + 'fill/Water.png');
+      case 'Wood': return this.cache.get(CFG.BASE_PATH + 'fill/Wood.png');
+      default: return null;
+    }
+  }
 
-        // 选中状态
-        this.selectedIndex = -1;
-        this.hoveredIndex = -1;
+  /** 获取元素表面纹理 */
+  _getSurfaceTexture(element) {
+    const st = element.surfaceType || 0;
+    const styles = {
+      0: 'AsphaltDark',  // 沥青
+      1: 'AsphaltRed',
+      2: 'AsphaltGreen',
+      3: 'BrickGray',    // 铺装
+      4: 'BrickRed',
+      5: 'Cement',
+      6: null,           // 基础(无纹理)
+      7: 'Earth',
+      8: 'Wood',         // 隔离带
+      9: 'Water',
+    };
+    return styles[st] || null;
+  }
 
-        // 边缘拖拽调节宽度
-        this.resizing = null; // { index, edge: 'left'|'right', startX, startWidth }
+  // ---- 主入口 ----
+  async draw(model, viewState) {
+    if (viewState) {
+      this.scale = viewState.scale || 1;
+      this.offsetX = viewState.offsetX || 0;
+      this.offsetY = viewState.offsetY || 0;
+    }
+    
+    await this.cache.waitAll();
+    
+    const ctx = this.ctx;
+    const w = this.canvas.width;
+    const h = this.canvas.height;
+    
+    // 计算道路总宽度
+    const roadWidth = model.totalWidth || model.elements.reduce((s, e) => s + e.width, 0);
+    
+    // 逻辑画布尺寸
+    this.logicalW = Math.max(px(roadWidth) + CFG.SIDE_WIDTH * 2 + CFG.PADDING * 2, w);
+    this.logicalH = Math.max(CFG.ROAD_Y + CFG.BASE_EXTRA + CFG.PADDING, h);
+    
+    // 应用视图变换
+    ctx.save();
+    ctx.clearRect(0, 0, w, h);
+    ctx.translate(this.offsetX, this.offsetY);
+    ctx.scale(this.scale, this.scale);
+    
+    // 计算关键X坐标
+    const roadPxW = px(roadWidth);
+    const centerX = this.logicalW / 2;
+    const roadLeft = centerX - roadPxW / 2;
+    const roadRight = centerX + roadPxW / 2;
+    
+    // 分层渲染（从后到前）
+    this._drawSky(centerX);
+    this._drawSideViews(model, roadLeft, roadRight);
+    this._drawGround(roadLeft, roadRight, roadPxW);
+    this._drawRoadElements(model, roadLeft, roadRight);
+    this._drawSplitLines(model, roadLeft);
+    this._drawArrows(model, roadLeft);
+    this._drawRedLines(model, roadLeft, roadRight);
+    this._drawCenterLine(centerX);
+    this._drawDimensions(model, roadLeft, roadRight);
+    this._drawWatermark(centerX);
+    
+    ctx.restore();
+    
+    // 存储关键坐标用于交互
+    this._roadLeft = roadLeft;
+    this._roadRight = roadRight;
+    this._roadPxW = roadPxW;
+    this._centerX = centerX;
+    this._elementXPositions = this._calcElementPositions(model, roadLeft);
+  }
 
-        // 标注开关
-        this.showDimensions = true;
+  _calcElementPositions(model, roadLeft) {
+    let x = roadLeft;
+    const positions = [];
+    for (const el of model.elements) {
+      positions.push({ left: x, right: x + px(el.width), element: el });
+      x += px(el.width);
+    }
+    return positions;
+  }
+
+  // ======== 天空背景 ========
+  _drawSky(cx) {
+    const ctx = this.ctx;
+    const skyImg = this.cache.get(CFG.BASE_PATH + 'sky/0.jpg');
+    
+    if (skyImg && skyImg.complete && skyImg.naturalWidth > 0) {
+      // 使用原始天空图
+      const imgW = skyImg.naturalWidth;
+      const imgH = skyImg.naturalHeight;
+      const drawW = this.logicalW;
+      const drawH = (imgH / imgW) * drawW; // 保持比例
+      ctx.drawImage(skyImg, 0, 0, drawW, Math.min(drawH, this.logicalH));
+    } else {
+      // 后备：渐变天空 + 云朵
+      const grad = ctx.createLinearGradient(0, 0, 0, CFG.ROAD_Y);
+      grad.addColorStop(0, CFG.COLOR_SKY_TOP);
+      grad.addColorStop(0.6, '#87CEEB');
+      grad.addColorStop(1, CFG.COLOR_SKY_BOT);
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, this.logicalW, CFG.ROAD_Y);
+      
+      // 简单云朵
+      ctx.fillStyle = 'rgba(255,255,255,0.7)';
+      this._drawCloud(cx - 300, 60, 80);
+      this._drawCloud(cx + 200, 100, 60);
+      this._drawCloud(cx - 100, 140, 50);
+      this._drawCloud(cx + 350, 50, 70);
+    }
+  }
+
+  _drawCloud(x, y, size) {
+    const ctx = this.ctx;
+    ctx.beginPath();
+    ctx.arc(x, y, size * 0.6, 0, Math.PI * 2);
+    ctx.arc(x + size * 0.5, y - size * 0.1, size * 0.5, 0, Math.PI * 2);
+    ctx.arc(x + size, y, size * 0.55, 0, Math.PI * 2);
+    ctx.arc(x + size * 0.3, y - size * 0.3, size * 0.45, 0, Math.PI * 2);
+    ctx.arc(x + size * 0.7, y - size * 0.25, size * 0.4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // ======== 侧边景观带 ========
+  _drawSideViews(model, roadLeft, roadRight) {
+    const ctx = this.ctx;
+    const viewType = model.sideViewType || 'House';
+    
+    // 左侧景观带
+    const leftW = roadLeft;
+    const svH = px(model.sideViewHeight || 0);
+    const retreat = px(model.sideViewRetreat || 2);
+    
+    // 地基
+    const groundY = CFG.ROAD_Y + svH;
+    
+    if (viewType === 'House') {
+      this._drawBuildingSide(CFG.SIDE_WIDTH * 0.2 - 60, roadLeft, 'left');
+    } else if (viewType === 'Woods') {
+      this._drawWoodsSide(0, roadLeft, 'left');
+    } else if (viewType === 'Grass') {
+      this._drawGrassSide(0, roadLeft);
     }
 
-    // ==================== 坐标转换 ====================
-
-    get properWidth() {
-        const totalPx = this.model.TotalWidth * EleScale;
-        return Math.max(totalPx, 800);
+    // 右侧景观带（镜像）
+    if (viewType === 'House') {
+      this._drawBuildingSide(roadRight, this.logicalW, 'right');
     }
+  }
 
-    get properHeight() {
-        return Math.max(this.model.CanvasHeight, 400);
+  _drawBuildingSide(fromX, toX, side) {
+    const ctx = this.ctx;
+    const availW = toX - fromX;
+    if (availW < 50) return;
+    
+    // 建筑区域背景（地面色）
+    const grad = ctx.createLinearGradient(0, CFG.BUILDING_Y, 0, CFG.ROAD_Y + 60);
+    grad.addColorStop(0, '#D4CFC4');
+    grad.addColorStop(0.5, '#E8E4DC');
+    grad.addColorStop(1, '#C8C0B0');
+    ctx.fillStyle = grad;
+    ctx.fillRect(fromX, CFG.BUILDING_Y, availW, CFG.ROAD_Y - CFG.BUILDING_Y + 60);
+    
+    // 绘制建筑群
+    const houses = this._houseImages;
+    let curX = (side === 'left') ? fromX + 10 : fromX + 10;
+    const endX = toX - 10;
+    let hIdx = 0;
+    
+    while (curX < endX - 30 && hIdx < houses.length) {
+      const hi = houses[hIdx];
+      const img = this.cache.get(hi.src);
+      const hw = Math.min(hi.width * 0.15, endX - curX - 5, 180);
+      const hh = hw * 0.8;
+      const hy = CFG.ROAD_Y - hh - px(model?.sideViewHeight || 0) - 5;
+      
+      if (img && img.complete && img.naturalWidth > 0) {
+        ctx.drawImage(img, curX, hy - 30, hw, hh + 30);
+      } else {
+        // 后备：简易建筑
+        this._drawSimpleBuilding(curX, hy, hw, hh);
+      }
+      
+      curX += hw + 8;
+      hIdx++;
     }
+  }
 
-    /**
-     * 屏幕坐标 → 世界坐标
-     */
-    screenToWorld(sx, sy) {
-        const rect = this.canvas.getBoundingClientRect();
-        const cx = rect.width / 2;
-        const cy = rect.height / 2;
-        return {
-            x: (sx - rect.left - cx - this.translateX) / this.scale + this.properWidth / 2,
-            y: (sy - rect.top - cy - this.translateY) / this.scale
-        };
+  _drawSimpleBuilding(x, y, w, h) {
+    const ctx = this.ctx;
+    // 建筑主体
+    const bodyColors = ['#C4BBAF', '#D4C9B8', '#BDB5A6', '#CCC0AE', '#D8D0C0'];
+    const color = bodyColors[Math.floor(Math.random() * bodyColors.length)];
+    ctx.fillStyle = color;
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = '#999';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x, y, w, h);
+    
+    // 窗户
+    ctx.fillStyle = '#87CEEB';
+    const winW = 12, winH = 16;
+    for (let row = 0; row < Math.floor(h / 35); row++) {
+      for (let col = 0; col < Math.floor(w / 30); col++) {
+        ctx.fillRect(x + 8 + col * 28, y + 10 + row * 32, winW, winH);
+      }
     }
+    // 屋顶
+    ctx.fillStyle = '#8B4513';
+    ctx.fillRect(x - 2, y - 4, w + 4, 6);
+  }
 
-    /**
-     * 获取最佳缩放比例
-     */
-    getProperScale() {
-        const rect = this.canvas.getBoundingClientRect();
-        return Math.min((rect.width - 100) / this.properWidth, 1.0);
+  _drawWoodsSide(fromX, toX, side) {
+    const ctx = this.ctx;
+    // 地面
+    ctx.fillStyle = '#8FBC8F';
+    ctx.fillRect(fromX, CFG.ROAD_Y - 40, toX - fromX, 60);
+    
+    // 树
+    for (let x = fromX + 20; x < toX - 20; x += 40 + Math.random() * 30) {
+      const treeH = 50 + Math.random() * 40;
+      this._drawTree(x, CFG.ROAD_Y - treeH, treeH * 0.25, treeH * 0.4);
     }
+  }
 
-    /**
-     * 居中显示
-     */
-    centerView() {
-        this.scale = this.getProperScale();
-        this.translateX = 0;
-        this.translateY = 0;
+  _drawGrassSide(fromX, toX) {
+    const ctx = this.ctx;
+    ctx.fillStyle = '#7CBA5C';
+    ctx.fillRect(fromX, CFG.ROAD_Y - 30, toX - fromX, 50);
+  }
+
+  _drawTree(x, baseY, trunkW, crownR) {
+    const ctx = this.ctx;
+    // 树干
+    ctx.fillStyle = '#8B6914';
+    ctx.fillRect(x - trunkW / 2, baseY - crownR * 0.3, trunkW, crownR * 0.8);
+    // 树冠
+    ctx.fillStyle = '#2E7D32';
+    ctx.beginPath();
+    ctx.arc(x, baseY - crownR - crownR * 0.15, crownR, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#388E3C';
+    ctx.beginPath();
+    ctx.arc(x + crownR * 0.2, baseY - crownR - crownR * 0.25, crownR * 0.7, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // ======== 地基/地面 ========
+  _drawGround(roadLeft, roadRight, roadPxW) {
+    const ctx = this.ctx;
+    const groundY = CFG.ROAD_Y;
+    const baseH = CFG.BASE_EXTRA;
+    
+    // 路面下方地基
+    const grad = ctx.createLinearGradient(0, groundY, 0, groundY + baseH);
+    grad.addColorStop(0, '#D0C8BC');
+    grad.addColorStop(0.15, CFG.COLOR_BASE_FILL);
+    grad.addColorStop(1, '#C8C0B0');
+    ctx.fillStyle = grad;
+    ctx.fillRect(roadLeft, groundY, roadPxW, baseH);
+    
+    // 路面底部暗色带
+    ctx.fillStyle = '#4A4A4A';
+    ctx.fillRect(roadLeft, groundY, roadPxW, 6);
+    
+    // 两侧地基
+    ctx.fillStyle = CFG.COLOR_GROUND;
+    ctx.fillRect(0, groundY, roadLeft, baseH);
+    ctx.fillRect(roadRight, groundY, this.logicalW - roadRight, baseH);
+  }
+
+  // ======== 道路元素 ========
+  _drawRoadElements(model, roadLeft, roadRight) {
+    const ctx = this.ctx;
+    let curX = roadLeft;
+    const elements = model.elements;
+    const surfaceLevel = CFG.ROAD_Y;
+    
+    for (let i = 0; i < elements.length; i++) {
+      const el = elements[i];
+      const elW = px(el.width);
+      const elH = px(el.height || 0.6);
+      
+      // 1. 地基矩形
+      ctx.fillStyle = '#E8E8E8';
+      ctx.fillRect(curX, surfaceLevel, elW + 0.5, CFG.BASE_EXTRA);
+      
+      // 2. 表面层（路面）
+      const surfaceH = px((el.surfaceHeight !== undefined ? el.surfaceHeight : 0.6));
+      const surfY = surfaceLevel - surfaceH;
+      const textureName = this._getSurfaceTexture(el);
+      const fillImg = textureName ? this._getFillImage(textureName) : null;
+      
+      if (fillImg && fillImg.complete && fillImg.naturalWidth > 0) {
+        // 使用纹理图案平铺
+        const pattern = ctx.createPattern(fillImg, 'repeat');
+        ctx.fillStyle = pattern;
+      } else {
+        // 后备颜色
+        ctx.fillStyle = el.surfaceType === 0 ? CFG.COLOR_ASPHALT : 
+                        el.surfaceType >= 3 && el.surfaceType <= 5 ? '#A08C0A' : '#E0E0E0';
+      }
+      ctx.fillRect(curX - 0.5, surfY, elW + 1, surfaceH);
+      
+      // 3. 表面顶部线
+      ctx.strokeStyle = '#1B1B1B';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(curX, surfY);
+      ctx.lineTo(curX + elW, surfY);
+      ctx.stroke();
+      
+      // 4. 装饰元素（车辆、行人、树木等）
+      this._drawElementDecor(el, curX, elW, surfaceH, surfY);
+      
+      // 5. 车道线（仅限车道类型）
+      if (el.turnTypes && el.turnTypes.length > 0 && el.turnCount > 1) {
+        this._drawLaneDividers(el, curX, elW, surfaceH, surfY);
+      }
+      
+      curX += elW;
     }
+  }
 
-    // ==================== 主渲染入口 ====================
+  _drawElementDecor(el, x, elW, surfaceH, surfY) {
+    const ctx = this.ctx;
+    const elemType = el.type;
+    const isTurned = el.direction === 'In';
+    
+    switch (elemType) {
+      case 'Vehicle': // 机动车道 - 画小汽车
+        this._drawSingleVehicle(x, elW, surfY, surfaceH, 'Car' + (isTurned ? 'In' : 'Out'), el);
+        break;
+      case 'Bus': // 公交专用道
+        this._drawSingleVehicle(x, elW, surfY, surfaceH, 'Bus' + (isTurned ? 'In' : 'Out'), el);
+        break;
+      case 'Truck': // 大车道
+        this._drawSingleVehicle(x, elW, surfY, surfaceH, 'Truck' + (isTurned ? 'In' : 'Out'), el);
+        break;
+      case 'Tramcar': // 有轨电车
+        this._drawSingleVehicle(x, elW, surfY, surfaceH, 'Tramcar' + (isTurned ? 'In' : 'Out'), el);
+        break;
+      case 'Pedestrian': // 人行道 - 画行人
+        this._drawArrayPedestrians(x, elW, surfY, surfaceH);
+        break;
+      case 'Bicycle': // 非机动车道 - 画自行车
+        this._drawArrayBicycles(x, elW, surfY, surfaceH);
+        break;
+      case 'IsoBelt': // 隔离带 - 画灌木/树木/路灯
+        this._drawIsoBelt(el, x, elW, surfY, surfaceH);
+        break;
+      case 'BusStop': // 公交站台
+        this._drawBusStop(x, elW, surfY, surfaceH);
+        break;
+      case 'UserDefine': // 自定义
+        this._drawUserDefine(el, x, elW, surfY, surfaceH);
+        break;
+    }
+  }
 
-    render() {
-        const ctx = this.ctx;
-        const w = this.canvas.width;
-        const h = this.canvas.height;
-
-        ctx.clearRect(0, 0, w, h);
-
+  _drawSingleVehicle(x, elW, surfY, surfaceH, imgKey, el) {
+    const ctx = this.ctx;
+    // 尝试使用原版图片
+    const B = CFG.BASE_PATH;
+    const styleDir = this.styleId === 0 ? 'style0' : 'style1';
+    const imgPath = B + styleDir + '/ElementImage/' + imgKey + '/0.png';
+    const img = this.cache.get(imgPath);
+    
+    if (img && img.complete && img.naturalWidth > 0) {
+      const scale = Math.min(elW * 0.6 / img.naturalWidth, surfaceH * 0.7 / img.naturalHeight, 1.2);
+      const iw = img.naturalWidth * scale;
+      const ih = img.naturalHeight * scale;
+      const ix = x + (elW - iw) / 2;
+      const iy = surfY - ih;
+      
+      if (el.direction === 'In') {
         ctx.save();
-        // 应用缩放和平移变换
-        const cx = w / 2;
-        const cy = h / 2;
-        ctx.translate(cx + this.translateX, cy + this.translateY);
-        ctx.scale(this.scale, this.scale);
-
-        // 计算断面起始X (居中)
-        const totalPx = this.model.TotalWidth * EleScale;
-        const startX = (this.properWidth - totalPx) / 2;
-
-        this._drawBackground(startX, totalPx);
-        this._drawElements(startX);
-        this._drawDimensions(startX);
-
+        ctx.translate(ix + iw, iy + ih / 2);
+        ctx.scale(-1, 1);
+        ctx.drawImage(img, 0, -ih / 2, iw, ih);
         ctx.restore();
+      } else {
+        ctx.drawImage(img, ix, iy, iw, ih);
+      }
+    } else {
+      // 后备：画简易小汽车
+      const carW = Math.min(elW * 0.5, 80);
+      const carH = carW * 0.45;
+      const cx = x + elW / 2;
+      const cy = surfY - carH;
+      
+      ctx.fillStyle = '#3A7BD5';
+      ctx.beginPath();
+      ctx.moveTo(cx - carW * 0.4, cy);
+      ctx.lineTo(cx + carW * 0.4, cy);
+      ctx.lineTo(cx + carW * 0.35, cy - carH * 0.3);
+      ctx.lineTo(cx - carW * 0.1, cy - carH * 0.5);
+      ctx.lineTo(cx - carW * 0.35, cy - carH * 0.3);
+      ctx.closePath();
+      ctx.fill();
+      // 车轮
+      ctx.fillStyle = '#333';
+      ctx.beginPath();
+      ctx.arc(cx - carW * 0.3, cy + 2, carW * 0.12, 0, Math.PI * 2);
+      ctx.arc(cx + carW * 0.25, cy + 2, carW * 0.12, 0, Math.PI * 2);
+      ctx.fill();
     }
+  }
 
-    // ==================== 背景绘制 ====================
+  _drawArrayPedestrians(x, elW, surfY, surfaceH) {
+    const ctx = this.ctx;
+    const count = Math.floor(elW / 35);
+    const interval = elW / count;
+    
+    for (let i = 0; i < count; i++) {
+      const px2 = x + interval * i + interval / 2;
+      const py = surfY - surfaceH * 1.3;
+      this._drawStickFigure(px2, py, surfaceH * 0.7);
+    }
+  }
 
-    _drawBackground(startX, totalPx) {
-        const ctx = this.ctx;
-        const w = this.properWidth;
-        const h = this.properHeight;
+  _drawStickFigure(x, y, size) {
+    const ctx = this.ctx;
+    ctx.strokeStyle = '#333';
+    ctx.lineWidth = 1.5;
+    ctx.lineCap = 'round';
+    // 头
+    ctx.beginPath();
+    ctx.arc(x, y - size * 0.6, size * 0.15, 0, Math.PI * 2);
+    ctx.fillStyle = '#FFD699';
+    ctx.fill();
+    ctx.stroke();
+    // 身体
+    ctx.beginPath();
+    ctx.moveTo(x, y - size * 0.45);
+    ctx.lineTo(x, y);
+    ctx.stroke();
+    // 腿
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x - size * 0.15, y + size * 0.4);
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + size * 0.15, y + size * 0.4);
+    ctx.stroke();
+    // 手臂
+    ctx.beginPath();
+    ctx.moveTo(x, y - size * 0.3);
+    ctx.lineTo(x - size * 0.2, y - size * 0.1);
+    ctx.moveTo(x, y - size * 0.3);
+    ctx.lineTo(x + size * 0.2, y);
+    ctx.stroke();
+  }
 
-        // 天空渐变
-        const skyGrad = ctx.createLinearGradient(0, 0, 0, h * 0.65);
-        skyGrad.addColorStop(0, '#87CEEB');
-        skyGrad.addColorStop(0.6, '#B0D4F1');
-        skyGrad.addColorStop(1, '#E8F0FE');
-        ctx.fillStyle = skyGrad;
-        ctx.fillRect(0, 0, w, h * 0.68);
+  _drawArrayBicycles(x, elW, surfY, surfaceH) {
+    const ctx = this.ctx;
+    const count = Math.floor(elW / 50);
+    const interval = elW / count;
+    
+    for (let i = 0; i < count; i++) {
+      const bx = x + interval * i + interval / 2;
+      const by = surfY - surfaceH * 1.1;
+      const bw = 20, bh = 14;
+      
+      // 简化自行车
+      ctx.strokeStyle = '#555';
+      ctx.lineWidth = 1.2;
+      // 车轮
+      ctx.beginPath();
+      ctx.arc(bx - bw * 0.3, by, bh * 0.45, 0, Math.PI * 2);
+      ctx.arc(bx + bw * 0.3, by, bh * 0.45, 0, Math.PI * 2);
+      ctx.stroke();
+      // 车架
+      ctx.beginPath();
+      ctx.moveTo(bx - bw * 0.3, by);
+      ctx.lineTo(bx, by - bh * 0.5);
+      ctx.lineTo(bx + bw * 0.3, by);
+      ctx.moveTo(bx, by - bh * 0.5);
+      ctx.lineTo(bx, by + bh * 0.2);
+      ctx.stroke();
+    }
+  }
 
-        // 地面
-        const groundGrad = ctx.createLinearGradient(0, h * 0.68, 0, h);
-        groundGrad.addColorStop(0, '#C8C8C8');
-        groundGrad.addColorStop(1, '#A0A0A0');
-        ctx.fillStyle = groundGrad;
-        ctx.fillRect(0, h * 0.68, w, h * 0.32);
+  _drawIsoBelt(el, x, elW, surfY, surfaceH) {
+    const ctx = this.ctx;
+    const isoType = el.isoType || 11;
+    
+    // 灌木（所有隔离带都有，间距较小）
+    const bushCount = Math.floor(elW / 30);
+    for (let i = 0; i < bushCount; i++) {
+      const bx = x + (i + 0.5) * elW / bushCount;
+      ctx.fillStyle = '#2E7D32';
+      ctx.beginPath();
+      ctx.arc(bx, surfY - surfaceH * 1.6, surfaceH * 0.35, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#43A047';
+      ctx.beginPath();
+      ctx.arc(bx + 3, surfY - surfaceH * 1.7, surfaceH * 0.25, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    
+    // 树木（大多数隔离带都有）
+    const hasTree = [11, 12, 13, 15].includes(isoType);
+    if (hasTree && elW > px(0.5)) {
+      const treeCount = Math.max(1, Math.floor(elW / 120));
+      for (let i = 0; i < treeCount; i++) {
+        const tx = x + (i + 0.5) * elW / treeCount;
+        this._drawTree(tx, surfY, 4, 18);
+      }
+    }
+    
+    // 路灯（机非隔离）
+    if (isoType === 13) {
+      const lampX = el.direction === 'In' ? x + elW * 0.3 : x + elW * 0.7;
+      ctx.fillStyle = '#555';
+      ctx.fillRect(lampX - 1.5, surfY - surfaceH * 3, 3, surfaceH * 3);
+      ctx.fillStyle = '#FFD700';
+      ctx.beginPath();
+      ctx.arc(lampX, surfY - surfaceH * 3.2, 6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    
+    // 防护栏
+    if (el.hasBarrier) {
+      ctx.strokeStyle = '#8B7355';
+      ctx.lineWidth = 2;
+      const by = surfY - surfaceH * 2;
+      ctx.beginPath();
+      ctx.moveTo(x + 5, by);
+      ctx.lineTo(x + elW - 5, by);
+      ctx.stroke();
+      // 立柱
+      for (let bx = x + 10; bx < x + elW - 10; bx += 20) {
+        ctx.fillStyle = '#8B7355';
+        ctx.fillRect(bx - 1, by - 5, 2, 10);
+      }
+    }
+  }
 
-        // 路基灰色矩形
-        const baseY = h * 0.68 - 20;
-        const baseHeight = 80;
-        const baseWidth = totalPx + 200;
-        ctx.fillStyle = '#E0E0E0';
-        ctx.fillRect(startX - 100, baseY, baseWidth, baseHeight);
-        ctx.strokeStyle = '#C0C0C0';
+  _drawBusStop(x, elW, surfY, surfaceH) {
+    const ctx = this.ctx;
+    // 站台背景
+    ctx.fillStyle = '#D4C9B8';
+    ctx.fillRect(x + 3, surfY - surfaceH, elW - 6, surfaceH);
+    // 站台标志
+    ctx.fillStyle = '#E8E0D0';
+    ctx.fillRect(x + 10, surfY - surfaceH + 2, elW - 20, surfaceH - 4);
+    ctx.fillStyle = '#333';
+    ctx.font = '11px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('BUS', x + elW / 2, surfY - surfaceH / 2 + 4);
+  }
+
+  _drawUserDefine(el, x, elW, surfY, surfaceH) {
+    const ctx = this.ctx;
+    const udType = el.userDefineType || 'Overpass';
+    switch (udType) {
+      case 'Overpass': // 高架
+        ctx.fillStyle = '#888';
+        ctx.fillRect(x + 5, surfY - surfaceH * 2, elW - 10, surfaceH * 5);
+        // 桥墩
+        ctx.fillStyle = '#777';
+        ctx.fillRect(x + elW * 0.2 - 3, surfY, 6, surfaceH * 2);
+        ctx.fillRect(x + elW * 0.8 - 3, surfY, 6, surfaceH * 2);
+        break;
+      case 'Water': // 河流
+        const waterGrad = ctx.createLinearGradient(0, surfY, 0, surfY - surfaceH * 4);
+        waterGrad.addColorStop(0, '#4A90D9');
+        waterGrad.addColorStop(0.5, '#7BC0F0');
+        waterGrad.addColorStop(1, '#4A90D9');
+        ctx.fillStyle = waterGrad;
+        ctx.fillRect(x, surfY - surfaceH * 4, elW, surfaceH * 4);
+        // 水面波纹
+        ctx.strokeStyle = 'rgba(255,255,255,0.3)';
         ctx.lineWidth = 1;
-        ctx.strokeRect(startX - 100, baseY, baseWidth, baseHeight);
-    }
-
-    // ==================== 元素绘制 ====================
-
-    _drawElements(startX) {
-        const ctx = this.ctx;
-        const h = this.properHeight;
-        const baseY = h * 0.68;
-
-        let x = startX;
-
-        for (let i = 0; i < this.model.EleList.length; i++) {
-            const el = this.model.EleList[i];
-            const elWidthPx = el.EleWidthPx;
-
-            if (elWidthPx <= 0) continue;
-
-            this._drawSingleElement(el, x, baseY, i);
-            x += elWidthPx;
+        for (let wy = surfY - surfaceH * 3.5; wy < surfY; wy += 10) {
+          ctx.beginPath();
+          ctx.moveTo(x, wy);
+          ctx.quadraticCurveTo(x + elW * 0.3, wy + 4, x + elW * 0.6, wy);
+          ctx.quadraticCurveTo(x + elW * 0.9, wy - 4, x + elW, wy);
+          ctx.stroke();
         }
-    }
-
-    /**
-     * 绘制单个元素
-     */
-    _drawSingleElement(el, x, baseY, index) {
-        const ctx = this.ctx;
-        const w = el.EleWidthPx;
-        const hPx = el.EleHeightPx;
-
-        // 路面顶部Y
-        const surfaceY = baseY - hPx;
-
-        // --- 地基 ---
-        const baseDepth = 30;
-        ctx.fillStyle = '#E8E8E8';
-        ctx.fillRect(x, baseY, w, baseDepth);
-        ctx.strokeStyle = '#D0D0D0';
-        ctx.lineWidth = 0.5;
-        ctx.strokeRect(x, baseY, w, baseDepth);
-
-        // --- 路面表面 ---
-        const styleData = this._getSurfaceStyle(el);
-        ctx.fillStyle = styleData.fill;
-        ctx.fillRect(x, surfaceY, w, hPx);
-
-        // 路面纹理 (铺装纹理)
-        if (styleData.texture) {
-            this._drawSurfaceTexture(x, surfaceY, w, hPx, styleData);
-        }
-
-        // 路面边框
-        ctx.strokeStyle = styleData.stroke;
+        break;
+      case 'ParkLane': // 停车带
+        ctx.fillStyle = '#E8E0D0';
+        ctx.fillRect(x + 2, surfY - surfaceH, elW - 4, surfaceH);
+        // 停车位线
+        ctx.strokeStyle = '#CCC';
         ctx.lineWidth = 1;
-        ctx.strokeRect(x, surfaceY, w, hPx);
-
-        // --- 路面标线 ---
-        if (el instanceof IsoBeltElement && !el.IsHardIsoBelt) {
-            // 标线隔离 - 虚线
-            ctx.setLineDash([4, 4]);
-            ctx.strokeStyle = '#FFD700';
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            const midY = surfaceY + hPx / 2;
-            ctx.moveTo(x, midY);
-            ctx.lineTo(x + w, midY);
-            ctx.stroke();
-            ctx.setLineDash([]);
+        ctx.setLineDash([4, 4]);
+        for (let px2 = x + 15; px2 < x + elW; px2 += 15) {
+          ctx.beginPath();
+          ctx.moveTo(px2, surfY - surfaceH);
+          ctx.lineTo(px2, surfY);
+          ctx.stroke();
         }
-
-        // --- 附件绘制 ---
-        if (el instanceof IsoBeltElement) {
-            this._drawIsoBeltAttachments(el, x, surfaceY, w, hPx);
-        }
-
-        // --- 箭头 ---
-        if (el.ArrowDirection && el.ArrowDirection !== ArrowDirection.None) {
-            this._drawArrow(el.ArrowDirection, x, surfaceY, w, hPx, el.Direction);
-        }
-
-        // --- 车辆图标 ---
-        if (el instanceof VehicleElement) {
-            this._drawVehicleIcon(el, x, surfaceY, w, hPx);
-        }
-
-        // --- 人行道图标 ---
-        if (el instanceof PedestrianElement) {
-            this._drawPedestrianIcon(x, surfaceY, w, hPx);
-        }
-
-        // --- 非机动车道图标 ---
-        if (el instanceof BicycleElement) {
-            this._drawBicycleIcon(x, surfaceY, w, hPx);
-        }
-
-        // --- 用户自定义 ---
-        if (el instanceof UserDefineElement) {
-            this._drawUserDefineIcon(el, x, surfaceY, w, hPx);
-        }
-
-        // --- 选中高亮 ---
-        if (index === this.selectedIndex) {
-            ctx.strokeStyle = '#0066FF';
-            ctx.lineWidth = 3;
-            ctx.setLineDash([6, 3]);
-            ctx.strokeRect(x - 1, surfaceY - 1, w + 2, hPx + baseDepth + 2);
-            ctx.setLineDash([]);
-
-            // 调节手柄
-            this._drawResizeHandles(x, surfaceY, w, hPx, baseDepth);
-        }
-
-        // --- 悬停高亮 ---
-        if (index === this.hoveredIndex && index !== this.selectedIndex) {
-            ctx.strokeStyle = 'rgba(0, 102, 255, 0.5)';
-            ctx.lineWidth = 2;
-            ctx.strokeRect(x, surfaceY, w, hPx + baseDepth);
-        }
+        ctx.setLineDash([]);
+        break;
+      default: // 自定义路面
+        ctx.fillStyle = '#C0B8A8';
+        ctx.fillRect(x, surfY - surfaceH, elW, surfaceH);
     }
+  }
 
-    /**
-     * 获取元素地表样式
-     */
-    _getSurfaceStyle(el) {
-        const styleIdx = Math.min(el.SurfaceStyleIndex, StyleSurfaceTypes[this.model.StyleIndex].length - 1);
-        const style = StyleSurfaceTypes[this.model.StyleIndex][styleIdx];
-
-        let fillColor = '#90A4AE'; // 默认
-        if (style && style.fill) {
-            const [r, g, b, a] = style.fill;
-            fillColor = `rgba(${r},${g},${b},${(a||255)/255})`;
-        }
-
-        let strokeColor = '#555';
-        if (style && style.stroke) {
-            const [r, g, b, a] = style.stroke;
-            strokeColor = `rgba(${r},${g},${b},${(a||255)/255})`;
-        }
-
-        return { fill: fillColor, stroke: strokeColor, texture: false };
+  // ======== 车道分界线 ========
+  _drawLaneDividers(el, x, elW, surfaceH, surfY) {
+    const ctx = this.ctx;
+    const laneCount = el.turnCount || 2;
+    const laneW = elW / laneCount;
+    
+    ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 4]);
+    
+    for (let i = 1; i < laneCount; i++) {
+      const lx = x + laneW * i;
+      ctx.beginPath();
+      ctx.moveTo(lx, surfY - surfaceH * 0.3);
+      ctx.lineTo(lx, surfY - surfaceH * 0.9);
+      ctx.stroke();
     }
+    ctx.setLineDash([]);
+  }
 
-    /**
-     * 绘制路面纹理
-     */
-    _drawSurfaceTexture(x, y, w, h, style) {
-        const ctx = this.ctx;
-        ctx.save();
+  // ======== 分割线 ========
+  _drawSplitLines(model, roadLeft) {
+    const ctx = this.ctx;
+    const elements = model.elements;
+    let curX = roadLeft;
+    
+    ctx.strokeStyle = '#1B1B1B';
+    ctx.lineWidth = 1.5;
+    
+    for (let i = 0; i < elements.length; i++) {
+      const el = elements[i];
+      const elW = px(el.width);
+      const surfH = px(el.surfaceHeight !== undefined ? el.surfaceHeight : 0.6);
+      
+      // 右分割线
+      if (i < elements.length - 1) {
+        const nx = elements[i + 1];
+        const nxSurfH = px(nx.surfaceHeight !== undefined ? nx.surfaceHeight : 0.6);
+        const heightDiff = surfH - nxSurfH;
+        
         ctx.beginPath();
-        ctx.rect(x, y, w, h);
-        ctx.clip();
-
-        // 砖纹理
-        const brickW = 8, brickH = 4;
-        ctx.strokeStyle = 'rgba(0,0,0,0.08)';
-        ctx.lineWidth = 0.3;
-        for (let bx = x; bx < x + w; bx += brickW) {
-            const offset = (Math.floor((bx - x) / brickW) % 2) * brickH / 2;
-            for (let by = y + offset; by < y + h; by += brickH) {
-                ctx.strokeRect(bx, by, brickW, brickH);
-            }
-        }
-        ctx.restore();
+        ctx.moveTo(curX + elW, CFG.ROAD_Y - surfH);
+        ctx.lineTo(curX + elW, CFG.ROAD_Y - surfH + heightDiff);
+        ctx.stroke();
+      }
+      
+      curX += elW;
     }
+  }
 
-    // ==================== 附件绘制 ====================
-
-    _drawIsoBeltAttachments(el, x, surfaceY, w, hPx) {
-        const ctx = this.ctx;
-        const midX = x + w / 2;
-
-        // 灌木丛
-        if (el.HasBush) {
-            const bushY = surfaceY - 2;
-            ctx.fillStyle = '#2E7D32';
-            for (let bx = x + 3; bx < x + w - 3; bx += 6) {
-                ctx.beginPath();
-                ctx.arc(bx + 3, bushY, 4, Math.PI, 0);
-                ctx.fill();
-            }
-            ctx.fillStyle = '#43A047';
-            for (let bx = x + 3; bx < x + w - 3; bx += 6) {
-                ctx.beginPath();
-                ctx.arc(bx + 3, bushY - 2, 3, Math.PI, 0);
-                ctx.fill();
-            }
-        }
-
-        // 树木
-        if (el.HasTree) {
-            const treeY = surfaceY - 5;
-            ctx.fillStyle = '#5D4037';
-            ctx.fillRect(midX - 1, treeY - 10, 2, 12);
-            ctx.fillStyle = '#2E7D32';
-            ctx.beginPath();
-            ctx.arc(midX, treeY - 18, 10, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.fillStyle = '#388E3C';
-            ctx.beginPath();
-            ctx.arc(midX - 2, treeY - 20, 7, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.beginPath();
-            ctx.arc(midX + 3, treeY - 16, 6, 0, Math.PI * 2);
-            ctx.fill();
-        }
-
-        // 护栏
-        if (el.HasBarrier) {
-            ctx.strokeStyle = '#757575';
-            ctx.lineWidth = 1.5;
-            const barrierY = surfaceY + 5;
-            ctx.setLineDash([]);
-            ctx.beginPath();
-            ctx.moveTo(x, barrierY);
-            ctx.lineTo(x + w, barrierY);
-            ctx.stroke();
-            // 立柱
-            for (let px = x + 5; px < x + w; px += 10) {
-                ctx.fillStyle = '#9E9E9E';
-                ctx.fillRect(px - 0.5, barrierY - 6, 1, 6);
-            }
-        }
-
-        // 路灯
-        if (el.HasLamp) {
-            const lampX = el.LampLocation === LampLocation.Left ? x + 5 :
-                          el.LampLocation === LampLocation.Right ? x + w - 5 : midX;
-            // 灯杆
-            ctx.strokeStyle = '#424242';
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(lampX, surfaceY);
-            ctx.lineTo(lampX, surfaceY - 30);
-            ctx.stroke();
-            // 灯头
-            ctx.fillStyle = '#FFC107';
-            const lampHeadY = surfaceY - 30;
-            ctx.beginPath();
-            if (el.Lamptype === LampType.OneBrance) {
-                ctx.arc(lampX + 4, lampHeadY + 2, 5, -Math.PI / 2, Math.PI / 2);
+  // ======== 方向箭头 ========
+  _drawArrows(model, roadLeft) {
+    const ctx = this.ctx;
+    const elements = model.elements;
+    let curX = roadLeft;
+    const arrowY = CFG.ROAD_Y - px(1.5); // 箭头在路面下方1.5m
+    
+    for (const el of elements) {
+      const elW = px(el.width);
+      
+      if (el.turnTypes && el.turnTypes.length > 0 && el.type === 'Vehicle') {
+        const laneCount = el.turnCount || el.turnTypes.length;
+        const laneW = elW / laneCount;
+        
+        for (let i = 0; i < laneCount; i++) {
+          const turnType = el.turnTypes[i] || 'S';
+          const arrowKey = turnType.toUpperCase();
+          const img = this.cache.get(CFG.BASE_PATH + 'arrows/' + arrowKey + '.png');
+          
+          const cx = curX + laneW * (i + 0.5);
+          const arrowSize = Math.min(laneW * 0.6, 25);
+          
+          if (img && img.complete && img.naturalWidth > 0) {
+            const as = arrowSize;
+            ctx.save();
+            if (el.direction === 'In') {
+              // 进口方向：180度旋转
+              ctx.translate(cx, arrowY);
+              ctx.scale(-1, -1);
+              ctx.drawImage(img, -as/2, -as/2, as, as);
             } else {
-                ctx.arc(lampX, lampHeadY + 2, 5, Math.PI, 0);
-            }
-            ctx.fill();
-            // 灯罩渐变
-            const glowGrad = ctx.createRadialGradient(lampX, lampHeadY, 3, lampX, lampHeadY, 12);
-            glowGrad.addColorStop(0, 'rgba(255, 235, 59, 0.4)');
-            glowGrad.addColorStop(1, 'rgba(255, 235, 59, 0)');
-            ctx.fillStyle = glowGrad;
-            ctx.beginPath();
-            ctx.arc(lampX, lampHeadY - 3, 12, 0, Math.PI * 2);
-            ctx.fill();
-        }
-    }
-
-    // ==================== 箭头绘制 ====================
-
-    _drawArrow(arrowDir, x, surfaceY, w, hPx, direction) {
-        const ctx = this.ctx;
-        const midX = x + w / 2;
-        const midY = surfaceY + hPx / 2;
-        const size = Math.min(w, hPx) * 0.4;
-
-        ctx.save();
-        ctx.translate(midX, midY);
-
-        const isOut = direction === SectionElementDir.Out;
-        const angle = isOut ? 0 : Math.PI;
-
-        ctx.fillStyle = '#FFFFFF';
-        ctx.strokeStyle = '#FFFFFF';
-        ctx.lineWidth = 2.5;
-        ctx.lineCap = 'round';
-
-        // 箭头直线
-        ctx.beginPath();
-        ctx.moveTo(-size * 0.7, 0);
-        ctx.lineTo(size * 0.5, 0);
-        ctx.stroke();
-
-        // 箭头尖
-        ctx.beginPath();
-        ctx.moveTo(size * 0.5, 0);
-        ctx.lineTo(size * 0.1, -size * 0.3);
-        ctx.moveTo(size * 0.5, 0);
-        ctx.lineTo(size * 0.1, size * 0.3);
-        ctx.stroke();
-
-        ctx.restore();
-    }
-
-    // ==================== 图标绘制 ====================
-
-    _drawVehicleIcon(el, x, surfaceY, w, hPx) {
-        const ctx = this.ctx;
-        const midX = x + w / 2;
-        const midY = surfaceY + hPx / 2;
-        const carW = w * 0.35;
-        const carH = carW * 0.55;
-
-        ctx.save();
-        ctx.fillStyle = 'rgba(80,80,80,0.5)';
-        // 车身
-        const carX = midX - carW / 2;
-        const carY = midY - carH / 2;
-        ctx.beginPath();
-        ctx.roundRect(carX, carY, carW, carH, 2);
-        ctx.fill();
-
-        // 车窗
-        ctx.fillStyle = 'rgba(180,210,240,0.6)';
-        ctx.fillRect(carX + carW * 0.1, carY + 1, carW * 0.35, carH * 0.45);
-        ctx.fillRect(carX + carW * 0.5, carY + 1, carW * 0.35, carH * 0.45);
-
-        // 车轮
-        ctx.fillStyle = 'rgba(40,40,40,0.5)';
-        ctx.beginPath();
-        ctx.arc(carX + carW * 0.2, carY + carH + 1, 2.5, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.beginPath();
-        ctx.arc(carX + carW * 0.75, carY + carH + 1, 2.5, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.restore();
-    }
-
-    _drawPedestrianIcon(x, surfaceY, w, hPx) {
-        const ctx = this.ctx;
-        const midY = surfaceY + hPx / 2;
-        const spacing = 10;
-
-        ctx.save();
-        ctx.fillStyle = 'rgba(100,100,100,0.5)';
-
-        for (let px = x + spacing; px < x + w - spacing; px += spacing) {
-            // 身体
-            ctx.beginPath();
-            ctx.arc(px, midY - 4, 2.5, 0, Math.PI * 2);
-            ctx.fill();
-            // 身体线
-            ctx.strokeStyle = 'rgba(100,100,100,0.4)';
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(px, midY - 1.5);
-            ctx.lineTo(px, midY + 4);
-            ctx.stroke();
-            // 腿
-            ctx.beginPath();
-            ctx.moveTo(px, midY + 4);
-            ctx.lineTo(px - 2, midY + 8);
-            ctx.moveTo(px, midY + 4);
-            ctx.lineTo(px + 2, midY + 8);
-            ctx.stroke();
-        }
-        ctx.restore();
-    }
-
-    _drawBicycleIcon(x, surfaceY, w, hPx) {
-        const ctx = this.ctx;
-        const midY = surfaceY + hPx / 2;
-        const spacing = 12;
-
-        ctx.save();
-        ctx.fillStyle = 'rgba(80,120,80,0.5)';
-        ctx.strokeStyle = 'rgba(80,120,80,0.5)';
-        ctx.lineWidth = 1;
-
-        for (let bx = x + spacing / 2; bx < x + w - spacing / 2; bx += spacing) {
-            // 车轮
-            ctx.beginPath();
-            ctx.arc(bx - 3, midY + 2, 3, 0, Math.PI * 2);
-            ctx.stroke();
-            ctx.beginPath();
-            ctx.arc(bx + 3, midY + 2, 3, 0, Math.PI * 2);
-            ctx.stroke();
-            // 车身
-            ctx.beginPath();
-            ctx.moveTo(bx - 3, midY + 2);
-            ctx.lineTo(bx, midY - 2);
-            ctx.lineTo(bx + 3, midY + 2);
-            ctx.stroke();
-            // 座垫
-            ctx.fillStyle = 'rgba(80,120,80,0.6)';
-            ctx.fillRect(bx - 1.5, midY - 3, 3, 2);
-        }
-        ctx.restore();
-    }
-
-    _drawUserDefineIcon(el, x, surfaceY, w, hPx) {
-        const ctx = this.ctx;
-
-        if (el.UserDefineType === UserDefineType.ParkLane) {
-            // 停车位标记
-            ctx.save();
-            ctx.strokeStyle = 'rgba(255,255,255,0.7)';
-            ctx.lineWidth = 1;
-            ctx.setLineDash([6, 3]);
-            const midY = surfaceY + hPx / 2;
-            ctx.beginPath();
-            ctx.moveTo(x + 3, midY);
-            ctx.lineTo(x + w - 3, midY);
-            ctx.stroke();
-            ctx.setLineDash([]);
-            ctx.restore();
-        } else if (el.UserDefineType === UserDefineType.Water) {
-            // 水面波纹
-            ctx.save();
-            ctx.strokeStyle = 'rgba(255,255,255,0.3)';
-            ctx.lineWidth = 1;
-            for (let wy = surfaceY + 3; wy < surfaceY + hPx - 3; wy += 5) {
-                ctx.beginPath();
-                for (let wx = x; wx < x + w; wx += 2) {
-                    const wy2 = wy + Math.sin((wx - x) * 0.3) * 2;
-                    if (wx === x) ctx.moveTo(wx, wy2);
-                    else ctx.lineTo(wx, wy2);
-                }
-                ctx.stroke();
+              ctx.drawImage(img, cx - as/2, arrowY - as/2, as, as);
             }
             ctx.restore();
-        } else if (el.UserDefineType === UserDefineType.Overpass) {
-            // 高架桥墩
-            ctx.save();
-            ctx.fillStyle = '#90A4AE';
-            const pierW = Math.min(w * 0.3, 8);
-            ctx.fillRect(x + w / 2 - pierW / 2, surfaceY, pierW, hPx + 20);
-            ctx.fillStyle = '#B0BEC5';
-            ctx.fillRect(x + w / 2 - w * 0.4, surfaceY - 8, w * 0.8, 8);
-            ctx.restore();
+          } else {
+            // 后备：手绘箭头
+            this._drawSimpleArrow(cx, arrowY, arrowSize, turnType, el.direction);
+          }
         }
+      }
+      
+      curX += elW;
     }
+  }
 
-    // ==================== 调节手柄 ====================
-
-    _drawResizeHandles(x, surfaceY, w, hPx, baseDepth) {
-        const ctx = this.ctx;
-        const handleSize = 6;
-
-        // 左边缘手柄
-        ctx.fillStyle = '#0066FF';
-        ctx.strokeStyle = '#FFF';
-        ctx.lineWidth = 1.5;
+  _drawSimpleArrow(x, y, size, turnType, dir) {
+    const ctx = this.ctx;
+    const s2 = size / 2;
+    ctx.fillStyle = '#FFF';
+    
+    ctx.save();
+    ctx.translate(x, y);
+    if (dir === 'In') ctx.scale(-1, -1);
+    
+    switch (turnType.toUpperCase()) {
+      case 'S': // 直行
         ctx.beginPath();
-        ctx.rect(x - handleSize / 2, surfaceY + (hPx + baseDepth) / 2 - handleSize / 2, handleSize, handleSize);
-        ctx.fill();
-        ctx.stroke();
-
-        // 右边缘手柄
+        ctx.moveTo(0, -s2); ctx.lineTo(s2 * 0.4, s2 * 0.2); ctx.lineTo(s2 * 0.15, s2 * 0.2);
+        ctx.lineTo(s2 * 0.15, s2 * 0.8); ctx.lineTo(-s2 * 0.15, s2 * 0.8);
+        ctx.lineTo(-s2 * 0.15, s2 * 0.2); ctx.lineTo(-s2 * 0.4, s2 * 0.2);
+        ctx.closePath();
+        break;
+      case 'L': // 左转
         ctx.beginPath();
-        ctx.rect(x + w - handleSize / 2, surfaceY + (hPx + baseDepth) / 2 - handleSize / 2, handleSize, handleSize);
-        ctx.fill();
-        ctx.stroke();
-    }
-
-    // ==================== 标注线绘制 ====================
-
-    _drawDimensions(startX) {
-        if (!this.showDimensions) return;
-
-        const ctx = this.ctx;
-        const h = this.properHeight;
-        const baseY = h * 0.68;
-        const dimY = baseY + 55;
-        const tickHeight = 8;
-        const textOffset = 14;
-
-        ctx.save();
-        ctx.strokeStyle = '#555';
-        ctx.fillStyle = '#333';
-        ctx.font = '11px "Microsoft YaHei", sans-serif';
-        ctx.textAlign = 'center';
-        ctx.lineWidth = 1;
-
-        let x = startX;
-
-        for (const el of this.model.EleList) {
-            const w = el.EleWidthPx;
-            if (w <= 0) continue;
-
-            // 标注线
-            ctx.beginPath();
-            ctx.moveTo(x, baseY + 5);
-            ctx.lineTo(x, dimY + tickHeight);
-            ctx.stroke();
-
-            ctx.beginPath();
-            ctx.moveTo(x + w, baseY + 5);
-            ctx.lineTo(x + w, dimY + tickHeight);
-            ctx.stroke();
-
-            // 水平线
-            ctx.strokeStyle = '#999';
-            ctx.beginPath();
-            ctx.moveTo(x, dimY);
-            ctx.lineTo(x + w, dimY);
-            ctx.stroke();
-            ctx.moveTo(x, dimY - 3);
-            ctx.lineTo(x, dimY + 3);
-            ctx.stroke();
-            ctx.moveTo(x + w, dimY - 3);
-            ctx.lineTo(x + w, dimY + 3);
-            ctx.stroke();
-
-            // 宽度文字
-            ctx.fillStyle = '#333';
-            const label = el.EleWidth.toFixed(2) + 'm';
-            ctx.fillText(label, x + w / 2, dimY - 4);
-
-            // 类型名
-            if (w > 40) {
-                ctx.fillStyle = '#777';
-                ctx.font = '9px "Microsoft YaHei", sans-serif';
-                ctx.fillText(el.EleTypeName, x + w / 2, dimY + textOffset);
-                ctx.font = '11px "Microsoft YaHei", sans-serif';
-            }
-
-            x += w;
-        }
-
-        // 总宽度标注
-        const totalPx = this.model.TotalWidth * EleScale;
-        const totalDimY = dimY + 30;
-        ctx.strokeStyle = '#555';
-        ctx.lineWidth = 1.5;
+        ctx.arc(0, s2 * 0.3, s2 * 0.4, -Math.PI * 0.5, Math.PI * 0.5, true);
+        ctx.lineTo(-s2 * 0.6, s2 * 0.5); ctx.lineTo(-s2 * 0.2, s2 * 0.35);
+        ctx.lineTo(-s2 * 0.5, s2 * 0.2);
+        break;
+      case 'R': // 右转
         ctx.beginPath();
-        ctx.moveTo(startX, dimY + 5);
-        ctx.lineTo(startX, totalDimY + tickHeight);
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.moveTo(startX + totalPx, dimY + 5);
-        ctx.lineTo(startX + totalPx, totalDimY + tickHeight);
-        ctx.stroke();
-        ctx.strokeStyle = '#555';
-        ctx.beginPath();
-        ctx.moveTo(startX, totalDimY);
-        ctx.lineTo(startX + totalPx, totalDimY);
-        ctx.stroke();
-
-        ctx.fillStyle = '#333';
-        ctx.font = 'bold 12px "Microsoft YaHei", sans-serif';
-        ctx.fillText('总宽 ' + this.model.TotalWidth.toFixed(2) + 'm', startX + totalPx / 2, totalDimY - 4);
-
-        ctx.restore();
+        ctx.arc(0, s2 * 0.3, s2 * 0.4, -Math.PI * 0.5, Math.PI * 0.5);
+        ctx.lineTo(s2 * 0.6, s2 * 0.5); ctx.lineTo(s2 * 0.2, s2 * 0.35);
+        ctx.lineTo(s2 * 0.5, s2 * 0.2);
+        break;
     }
+    ctx.fill();
+    ctx.restore();
+  }
 
-    // ==================== 交互处理 ====================
-
-    /**
-     * 获取鼠标所在元素索引
-     */
-    getElementAt(screenX, screenY) {
-        const world = this.screenToWorld(screenX, screenY);
-        const h = this.properHeight;
-        const baseY = h * 0.68;
-        const totalPx = this.model.TotalWidth * EleScale;
-        const startX = (this.properWidth - totalPx) / 2;
-
-        let x = startX;
-        for (let i = 0; i < this.model.EleList.length; i++) {
-            const w = this.model.EleList[i].EleWidthPx;
-            if (w <= 0) continue;
-
-            const elY = baseY - this.model.EleList[i].EleHeightPx;
-            if (world.x >= x && world.x <= x + w && world.y >= elY && world.y <= baseY + 30) {
-                return i;
-            }
-            x += w;
-        }
-        return -1;
+  // ======== 红线 ========
+  _drawRedLines(model, roadLeft, roadRight) {
+    if (!model.redLineWidth || model.redLineWidth <= 0) return;
+    const ctx = this.ctx;
+    const rlPx = px(model.redLineWidth);
+    const totalPx = roadRight - roadLeft;
+    
+    if (totalPx > rlPx) {
+      const leftX = roadLeft + (totalPx - rlPx) / 2;
+      const rightX = roadLeft + (totalPx + rlPx) / 2;
+      
+      ctx.strokeStyle = CFG.COLOR_RED_LINE;
+      ctx.lineWidth = 3;
+      ctx.setLineDash([8, 4]);
+      
+      // 左红线
+      ctx.beginPath();
+      ctx.moveTo(leftX, CFG.ROAD_Y - 300);
+      ctx.lineTo(leftX, CFG.ROAD_Y + CFG.BASE_EXTRA);
+      ctx.stroke();
+      
+      // 右红线
+      ctx.beginPath();
+      ctx.moveTo(rightX, CFG.ROAD_Y - 300);
+      ctx.lineTo(rightX, CFG.ROAD_Y + CFG.BASE_EXTRA);
+      ctx.stroke();
+      
+      ctx.setLineDash([]);
+      
+      // 红线标签
+      ctx.fillStyle = CFG.COLOR_RED_LINE;
+      ctx.font = 'bold 14px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('红线 ' + model.redLineWidth + 'm', leftX - 10, CFG.ROAD_Y - 320);
     }
+  }
 
-    /**
-     * 鼠标按下
-     */
-    onMouseDown(screenX, screenY, button) {
-        const idx = this.getElementAt(screenX, screenY);
+  // ======== 中心线 ========
+  _drawCenterLine(cx) {
+    const ctx = this.ctx;
+    ctx.strokeStyle = CFG.COLOR_CENTER_LINE;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([8, 3, 2, 3]);
+    
+    ctx.beginPath();
+    ctx.moveTo(cx, CFG.ROAD_Y - 300);
+    ctx.lineTo(cx, CFG.ROAD_Y + 100);
+    ctx.stroke();
+    
+    ctx.setLineDash([]);
+  }
 
-        if (button === 0) {
-            if (idx >= 0) {
-                this.selectedIndex = idx;
-                // 检查是否点击调节手柄
-                const el = this.model.EleList[idx];
-                const w = el.EleWidthPx;
-                const world = this.screenToWorld(screenX, screenY);
-
-                // 计算元素位置
-                const totalPx = this.model.TotalWidth * EleScale;
-                const startX = (this.properWidth - totalPx) / 2;
-                let elX = startX;
-                for (let i = 0; i < idx; i++) {
-                    elX += this.model.EleList[i].EleWidthPx;
-                }
-
-                const handleMargin = 8 / this.scale;
-                if (Math.abs(world.x - elX) < handleMargin) {
-                    this.resizing = { index: idx, edge: 'left', startX: screenX, startWidth: el.EleWidth };
-                } else if (Math.abs(world.x - (elX + w)) < handleMargin) {
-                    this.resizing = { index: idx, edge: 'right', startX: screenX, startWidth: el.EleWidth };
-                } else {
-                    this.isDragging = true;
-                    this.dragStartX = screenX;
-                    this.dragStartY = screenY;
-                    this.dragTranslateX = this.translateX;
-                    this.dragTranslateY = this.translateY;
-                }
-            } else {
-                this.selectedIndex = -1;
-                this.isDragging = true;
-                this.dragStartX = screenX;
-                this.dragStartY = screenY;
-                this.dragTranslateX = this.translateX;
-                this.dragTranslateY = this.translateY;
-            }
-        }
+  // ======== 尺寸标注 ========
+  _drawDimensions(model, roadLeft, roadRight) {
+    const ctx = this.ctx;
+    const dimY = CFG.ROAD_Y - px(2); // 标注线位置（路面上方2m）
+    const elements = model.elements;
+    
+    let curX = roadLeft;
+    
+    for (const el of elements) {
+      const elW = px(el.width);
+      const labelX = curX + elW / 2;
+      
+      // 标注竖线
+      ctx.strokeStyle = '#393939';
+      ctx.lineWidth = 1;
+      
+      // 左竖线
+      ctx.beginPath();
+      ctx.moveTo(curX, dimY);
+      ctx.lineTo(curX, CFG.ROAD_Y);
+      ctx.stroke();
+      
+      // 右竖线
+      ctx.beginPath();
+      ctx.moveTo(curX + elW, dimY);
+      ctx.lineTo(curX + elW, CFG.ROAD_Y);
+      ctx.stroke();
+      
+      // 斜线标记
+      const slashSize = 4;
+      ctx.beginPath();
+      ctx.moveTo(curX, dimY);
+      ctx.lineTo(curX + slashSize, dimY + slashSize);
+      ctx.moveTo(curX + elW, dimY);
+      ctx.lineTo(curX + elW - slashSize, dimY + slashSize);
+      ctx.stroke();
+      
+      // 水平标注线
+      ctx.beginPath();
+      ctx.moveTo(curX, dimY);
+      ctx.lineTo(curX + elW, dimY);
+      ctx.stroke();
+      
+      // 宽度标签
+      ctx.fillStyle = '#393939';
+      ctx.font = '11px sans-serif';
+      ctx.textAlign = 'center';
+      const label = el.width.toFixed(2);
+      const textWidth = ctx.measureText(label).width;
+      
+      if (textWidth < elW) {
+        ctx.fillText(label, labelX, dimY - 6);
+      } else {
+        ctx.fillText(label, labelX, dimY + 16);
+      }
+      
+      curX += elW;
     }
+    
+    // 总宽标注
+    const totalW = roadRight - roadLeft;
+    ctx.fillStyle = '#000';
+    ctx.font = 'bold 11px sans-serif';
+    ctx.textAlign = 'center';
+    const totalLabel = '总宽 ' + mp(totalW).toFixed(2) + 'm';
+    ctx.fillText(totalLabel, roadLeft + totalW / 2, dimY + 35);
+  }
 
-    /**
-     * 鼠标移动
-     */
-    onMouseMove(screenX, screenY) {
-        if (this.resizing) {
-            const delta = (screenX - this.resizing.startX) / this.scale;
-            const deltaMeters = delta / EleScale;
-            const el = this.model.EleList[this.resizing.index];
-            let newWidth = this.resizing.startWidth + deltaMeters;
-
-            if (this.resizing.edge === 'left') {
-                // 左侧拖拽：影响当前元素和前一个元素
-                newWidth = this.resizing.startWidth - deltaMeters;
-                // 简化处理：只调当前元素
-            }
-
-            newWidth = Math.max(el.MinWidth, Math.min(el.MaxWidth, newWidth));
-            el.EleWidth = newWidth;
-            this.render();
-            return;
-        }
-
-        if (this.isDragging) {
-            const dx = screenX - this.dragStartX;
-            const dy = screenY - this.dragStartY;
-            this.translateX = this.dragTranslateX + dx;
-            this.translateY = this.dragTranslateY + dy;
-            this.render();
-            return;
-        }
-
-        // 悬停检测
-        const idx = this.getElementAt(screenX, screenY);
-        if (idx !== this.hoveredIndex) {
-            this.hoveredIndex = idx;
-            this.canvas.style.cursor = this.resizing ? 'ew-resize' : (idx >= 0 ? 'pointer' : 'grab');
-            this.render();
-        }
+  // ======== 水印 ========
+  _drawWatermark(cx) {
+    const ctx = this.ctx;
+    ctx.fillStyle = 'rgba(0,0,0,0.06)';
+    ctx.font = '18px sans-serif';
+    ctx.textAlign = 'center';
+    
+    const startY = CFG.ROAD_Y - 100;
+    const endY = CFG.ROAD_Y + 50;
+    const stepX = 120;
+    const stepY = 80;
+    
+    for (let wy = startY; wy < endY; wy += stepY) {
+      for (let wx = cx - 300; wx < cx + 300; wx += stepX) {
+        ctx.fillText('AITS', wx, wy);
+        ctx.fillText('济安软件', wx, wy + 20);
+      }
     }
+  }
 
-    /**
-     * 鼠标释放
-     */
-    onMouseUp() {
-        this.isDragging = false;
-        this.resizing = null;
+  // ======== 交互：点击命中测试 ========
+  hitTest(mx, my) {
+    // 将屏幕坐标转换为逻辑坐标
+    const lx = (mx - this.offsetX) / this.scale;
+    const ly = (my - this.offsetY) / this.scale;
+    
+    if (!this._elementXPositions) return -1;
+    
+    for (let i = 0; i < this._elementXPositions.length; i++) {
+      const pos = this._elementXPositions[i];
+      if (lx >= pos.left && lx <= pos.right) {
+        return i;
+      }
     }
+    return -1;
+  }
 
-    /**
-     * 滚轮缩放
-     */
-    onWheel(screenX, screenY, deltaY) {
-        const oldScale = this.scale;
-        if (deltaY < 0) {
-            this.scale = Math.min(this.maxScale, this.scale * 1.1);
-        } else {
-            this.scale = Math.max(this.minScale, this.scale / 1.1);
-        }
+  /** 获取元素像素范围 */
+  getElementBounds(index) {
+    if (!this._elementXPositions || index < 0 || index >= this._elementXPositions.length) return null;
+    const pos = this._elementXPositions[index];
+    return {
+      left: pos.left * this.scale + this.offsetX,
+      right: pos.right * this.scale + this.offsetX,
+      top: (CFG.ROAD_Y - 200) * this.scale + this.offsetY,
+      bottom: (CFG.ROAD_Y + CFG.BASE_EXTRA) * this.scale + this.offsetY,
+      width: (pos.right - pos.left) * this.scale
+    };
+  }
 
-        // 以鼠标位置为中心缩放
-        const rect = this.canvas.getBoundingClientRect();
-        const mx = screenX - rect.left - rect.width / 2;
-        const my = screenY - rect.top - rect.height / 2;
-        const ratio = this.scale / oldScale;
-        this.translateX = mx + ratio * (this.translateX - mx);
-        this.translateY = my + ratio * (this.translateY - my);
-
-        this.render();
-    }
-
-    /**
-     * 删除选中元素
-     */
-    deleteSelected() {
-        if (this.selectedIndex >= 0) {
-            this.model.RemoveElement(this.selectedIndex);
-            this.selectedIndex = -1;
-            this.render();
-        }
-    }
+  /** 获取逻辑坐标 */
+  toLogical(screenX, screenY) {
+    return {
+      x: (screenX - this.offsetX) / this.scale,
+      y: (screenY - this.offsetY) / this.scale
+    };
+  }
 }

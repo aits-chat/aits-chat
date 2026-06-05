@@ -862,6 +862,110 @@ class RoadSectionModel {
         }
     }
 
+    // ===== 简化接口 (供渲染器和控制器使用) =====
+
+    /** 获取简单元素数组 */
+    get elements() {
+        return this.EleList.map(el => ({
+            type: this._getSimpleType(el),
+            width: el.EleWidth,
+            height: el.EleHeight,
+            surfaceHeight: el.EleHeight,
+            surfaceType: this._getSurfaceTypeIndex(el),
+            turnTypes: this._getTurnTypes(el),
+            turnCount: this._getTurnCount(el),
+            direction: el.Direction || 'Out',
+            isoType: el instanceof IsoBeltElement ? el.IsoBeltType : undefined,
+            hasBarrier: el instanceof IsoBeltElement ? el.HasBarrier : false,
+            hasTree: el instanceof IsoBeltElement ? el.HasTree : false,
+            hasBush: el instanceof IsoBeltElement ? el.HasBush : false,
+            hasLamp: el instanceof IsoBeltElement ? el.HasLamp : false,
+            userDefineType: el instanceof UserDefineElement ? el.UserDefineType : undefined,
+            _raw: el
+        }));
+    }
+
+    get totalWidth() { return this.TotalWidth; }
+    get totalLaneCount() { return this.RoadInputPara.LaneNo; }
+    get redLineWidth() { return this.RoadInputPara.RedLineLength; }
+    set redLineWidth(v) { this.RoadInputPara.RedLineLength = v; }
+    get sideViewType() { return 'House'; }
+    get sideViewHeight() { return 0; }
+    get sideViewRetreat() { return 2; }
+
+    _getSimpleType(el) {
+        const t = el.EleType;
+        if (t === 1) return 'Pedestrian';
+        if (t === 2) return 'Bicycle';
+        if ([3,4,5].includes(t)) {
+            if (t === 4) return 'Truck';
+            if (t === 5) return 'Bus';
+            return 'Vehicle';
+        }
+        if (t === 18) return 'Tramcar';
+        if ([9,10].includes(t)) return 'BusStop';
+        if ([11,12,13,14,15].includes(t)) return 'IsoBelt';
+        if (t === 17) return 'UserDefine';
+        return 'Vehicle';
+    }
+
+    _getSurfaceTypeIndex(el) {
+        const st = el.SurfaceType;
+        if (st === SurfaceType.Asphalt) return 0;
+        if (st === SurfaceType.PaveMent) return 3;
+        if (st === SurfaceType.Earth) return 7;
+        if (st === SurfaceType.IsoBelt) return 8;
+        if (st === SurfaceType.Water) return 9;
+        return 0;
+    }
+
+    _getTurnTypes(el) {
+        if (el instanceof VehicleElement) {
+            const count = this._getTurnCount(el);
+            if (el.Direction === 'In') return Array(count).fill('S');
+            return Array(count).fill('S');
+        }
+        return [];
+    }
+
+    _getTurnCount(el) {
+        if (el instanceof VehicleElement) {
+            return el.Direction === 'In' ? this.RoadInputPara.InLaneNo : this.RoadInputPara.OutLaneNo;
+        }
+        return 0;
+    }
+
+    recalc() { this.CalculateElementWidth(); }
+
+    static createFromGrade(gradeIndex) {
+        const model = new RoadSectionModel();
+        const rank = RoadRankOptions[gradeIndex] || RoadRanks.Arterial50;
+        model.RoadInputPara.Rank = rank;
+        model.RoadInputPara.LaneNo = Math.min(rank.LaneMax, 4);
+        model.RoadInputPara.InLaneNo = Math.ceil(model.RoadInputPara.LaneNo / 2);
+        model.RoadInputPara.OutLaneNo = model.RoadInputPara.LaneNo - model.RoadInputPara.InLaneNo;
+        model.RoadInputPara.RedLineLength = rank.RedLineMin + 10;
+        model.RoadInputPara.Name = rank.Name;
+        model.InitSectionSeries();
+        model.CalculateElementWidth();
+        return model;
+    }
+
+    static createElement(type, userDefineType) {
+        switch (type) {
+            case 'Vehicle': return new VehicleElement(3, SectionElementDir.Out);
+            case 'Bus': return new VehicleElement(5, SectionElementDir.Out);
+            case 'Truck': return new VehicleElement(4, SectionElementDir.Out);
+            case 'Tramcar': return new VehicleElement(18, SectionElementDir.Out);
+            case 'Pedestrian': return new PedestrianElement();
+            case 'Bicycle': return new BicycleElement(SectionElementDir.Out);
+            case 'IsoBelt': return new IsoBeltElement(IsoBeltType.Center);
+            case 'BusStop': return new BusStopElement(9);
+            case 'UserDefine': return new UserDefineElement(userDefineType || UserDefineType.URoadface);
+            default: return null;
+        }
+    }
+
     /**
      * 序列化为JSON
      */
