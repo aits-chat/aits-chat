@@ -27,11 +27,16 @@ class ImageCache {
     return this._images[src] || null;
   }
 
-  /** 等待所有图片加载完成 */
-  waitAll() {
+  /** 等待所有图片加载完成（带超时防止永久挂起） */
+  waitAll(timeout = 10000) {
     const promises = Object.values(this._images).map(img => {
-      if (img.complete) return Promise.resolve();
-      return new Promise(resolve => { img.onload = resolve; img.onerror = resolve; });
+      if (img.complete && img.naturalWidth > 0) return Promise.resolve();
+      const loadPromise = new Promise(resolve => {
+        img.onload = resolve;
+        img.onerror = resolve;
+      });
+      const timeoutPromise = new Promise(resolve => setTimeout(resolve, timeout));
+      return Promise.race([loadPromise, timeoutPromise]);
     });
     return Promise.all(promises);
   }
@@ -64,6 +69,8 @@ const CFG = {
   // 样式路径
   BASE_PATH: 'images/',
 };
+// 挂载到 window，确保其他脚本可访问
+window.CFG = CFG;
 
 // ============ 辅助函数 ============
 function px(meters) { return meters * CFG.SCALE; }
@@ -109,8 +116,6 @@ class CrossSectionRenderer {
     });
     // 建筑
     this._houseImages = [0,1,2,3,4,5,6,7].map(i => {
-      const src = B + 'sideview/House/' + i + '-*.png';
-      // 实际文件名固定
       const widths = [1000,1000,640,900,900,800,800,850];
       const realSrc = B + 'sideview/House/' + i + '-' + widths[i] + '.png';
       this.cache.load(realSrc);
@@ -120,12 +125,17 @@ class CrossSectionRenderer {
     this.cache.load(B + 'sideview/Woods/0-1000.png');
     this.cache.load(B + 'sideview/Grass/0-400.png');
     this.cache.load(B + 'sideview/Grass/1-1000.png');
-    // 灌木
+    // 灌木/路灯/防护栏
     this.cache.load(B + 'style1/ElementImage/Bush/0.png');
-    // 路灯
     this.cache.load(B + 'style1/ElementImage/Lamp/0.png');
-    // 防护栏
     this.cache.load(B + 'style1/ElementImage/Barrier/0.png');
+    // 车辆元素 (style0 + style1)
+    ['Car','Bus','Truck','Tramcar'].forEach(v => {
+      ['In','Out'].forEach(dir => {
+        this.cache.load(B + 'style0/ElementImage/' + v + dir + '.png');
+        this.cache.load(B + 'style1/ElementImage/' + v + dir + '.png');
+      });
+    });
   }
 
   _getFillImage(textureName) {
@@ -164,30 +174,38 @@ class CrossSectionRenderer {
   // ---- 主入口 ----
   async draw(model, viewState) {
     if (viewState) {
-      this.scale = viewState.scale || 1;
-      this.offsetX = viewState.offsetX || 0;
-      this.offsetY = viewState.offsetY || 0;
+      this.scale = isFinite(viewState.scale) ? viewState.scale : 1;
+      this.offsetX = isFinite(viewState.offsetX) ? viewState.offsetX : 0;
+      this.offsetY = isFinite(viewState.offsetY) ? viewState.offsetY : 0;
     }
-    
+
     await this.cache.waitAll();
-    
+
     const ctx = this.ctx;
     const w = this.canvas.width;
     const h = this.canvas.height;
-    
+
     // 计算道路总宽度
-    const roadWidth = model.totalWidth || model.elements.reduce((s, e) => s + e.width, 0);
-    
+    let roadWidth = model.totalWidth;
+    if (!isFinite(roadWidth) || roadWidth <= 0) {
+      roadWidth = model.elements.reduce((s, e) => s + (isFinite(e.width) ? e.width : 0), 0);
+    }
+    if (!isFinite(roadWidth) || roadWidth <= 0) roadWidth = 40; // 后备默认值
+
     // 逻辑画布尺寸
     this.logicalW = Math.max(px(roadWidth) + CFG.SIDE_WIDTH * 2 + CFG.PADDING * 2, w);
     this.logicalH = Math.max(CFG.ROAD_Y + CFG.BASE_EXTRA + CFG.PADDING, h);
-    
+
+    // 防御 NaN
+    if (!isFinite(this.logicalW)) this.logicalW = 2000;
+    if (!isFinite(this.logicalH)) this.logicalH = 800;
+
     // 应用视图变换
     ctx.save();
     ctx.clearRect(0, 0, w, h);
     ctx.translate(this.offsetX, this.offsetY);
     ctx.scale(this.scale, this.scale);
-    
+
     // 计算关键X坐标
     const roadPxW = px(roadWidth);
     const centerX = this.logicalW / 2;
@@ -509,7 +527,7 @@ class CrossSectionRenderer {
     // 尝试使用原版图片
     const B = CFG.BASE_PATH;
     const styleDir = this.styleId === 0 ? 'style0' : 'style1';
-    const imgPath = B + styleDir + '/ElementImage/' + imgKey + '/0.png';
+    const imgPath = B + styleDir + '/ElementImage/' + imgKey + '.png';
     const img = this.cache.get(imgPath);
     
     if (img && img.complete && img.naturalWidth > 0) {

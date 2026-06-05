@@ -19,33 +19,43 @@
   let isPanning = false;
   let dragStart = null;
   let panStart = null;
+  let panRAF = null;
   let currentGrade = 2;
 
   // ===== 初始化 =====
   function init() {
-    renderer = new CrossSectionRenderer(canvas);
-    resizeCanvas();
-    window.addEventListener('resize', resizeCanvas);
-    
-    // 生成默认断面
-    onGenerate();
-    
-    // 事件绑定
-    bindToolbarEvents();
-    bindCanvasEvents();
-    bindBottomToolbar();
+    try {
+      renderer = new CrossSectionRenderer(canvas);
+      resizeCanvas();
+      window.addEventListener('resize', resizeCanvas);
+      
+      // 生成默认断面
+      onGenerate();
+      
+      // 事件绑定
+      bindToolbarEvents();
+      bindCanvasEvents();
+      bindBottomToolbar();
+    } catch(e) {
+      console.error('初始化失败:', e);
+      loading.style.display = 'none';
+    }
   }
 
   function resizeCanvas() {
     const w = container.clientWidth;
     const h = container.clientHeight;
+    if (w <= 0 || h <= 0) return;
     canvas.width = w;
     canvas.height = h;
-    if (model) draw();
+    if (model) requestAnimationFrame(draw);
   }
 
+  let drawPending = false;
   // ===== 绘制 =====
   async function draw() {
+    if (drawPending) return;
+    drawPending = true;
     loading.style.display = 'flex';
     try {
       await renderer.draw(model, { scale: renderer.scale, offsetX: renderer.offsetX, offsetY: renderer.offsetY });
@@ -54,6 +64,7 @@
       console.error('绘制错误:', e);
     }
     loading.style.display = 'none';
+    drawPending = false;
   }
 
   function updateInfo() {
@@ -96,19 +107,23 @@
   }
 
   function fitToScreen() {
-    const roadPx = model.totalWidth * CFG.SCALE;
+    const roadW = isFinite(model.totalWidth) && model.totalWidth > 0 ? model.totalWidth : 40;
+    const roadPx = roadW * CFG.SCALE;
     const totalW = roadPx + CFG.SIDE_WIDTH * 2 + CFG.PADDING * 2;
     const totalH = CFG.ROAD_Y + CFG.BASE_EXTRA + CFG.PADDING;
-    
+
+    const cw = container.clientWidth || 800;
+    const ch = container.clientHeight || 600;
+
     const fitScale = Math.min(
-      container.clientWidth / totalW,
-      container.clientHeight / totalH,
+      cw / totalW,
+      ch / totalH,
       1.5
     ) * 0.85;
-    
+
     renderer.scale = Math.max(0.2, Math.min(fitScale, 2.0));
-    renderer.offsetX = (container.clientWidth - totalW * renderer.scale) / 2;
-    renderer.offsetY = (container.clientHeight - totalH * renderer.scale) / 2;
+    renderer.offsetX = (cw - totalW * renderer.scale) / 2;
+    renderer.offsetY = (ch - totalH * renderer.scale) / 2;
   }
 
   // ===== 元素操作 =====
@@ -456,7 +471,12 @@
       if (isPanning) {
         renderer.offsetX = e.clientX - panStart.x;
         renderer.offsetY = e.clientY - panStart.y;
-        draw();
+        if (!panRAF) {
+          panRAF = requestAnimationFrame(() => {
+            draw();
+            panRAF = null;
+          });
+        }
         return;
       }
       
@@ -516,5 +536,9 @@
   }
 
   // ===== 启动 =====
-  init();
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
 })();
