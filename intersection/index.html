@@ -3,53 +3,150 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>交叉口设计 — AITS</title>
-<style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
-    background: linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%);
-    min-height: 100vh;
-    color: #e0e0e0;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    padding: 20px;
-    text-align: center;
-  }
-  .icon { font-size: 72px; margin-bottom: 24px; }
-  h1 { font-size: 36px; font-weight: 300; letter-spacing: 6px; margin-bottom: 12px; color: #fff; }
-  .sub { color: #8ab4c8; font-size: 15px; margin-bottom: 40px; }
-  .progress {
-    width: 200px;
-    height: 4px;
-    background: rgba(255,255,255,0.1);
-    border-radius: 2px;
-    margin: 0 auto 30px;
-    overflow: hidden;
-  }
-  .progress-bar {
-    height: 100%;
-    width: 30%;
-    background: linear-gradient(90deg, #6ac8ff, #4a90d9);
-    border-radius: 2px;
-    animation: pulse 2s ease-in-out infinite;
-  }
-  @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.5; }
-  }
-  a { color: #6ac8ff; text-decoration: none; font-size: 14px; }
-  a:hover { text-decoration: underline; }
-</style>
+<title>交叉口设计 - AITS</title>
+<link rel="stylesheet" href="css/style.css?v=1.5">
 </head>
 <body>
-  <div class="icon">✚</div>
-  <h1>交叉口设计</h1>
-  <p class="sub">平面交叉口在线设计工具<br>涵盖渠化设计、信号配时、交通组织优化</p>
-  <div class="progress"><div class="progress-bar"></div></div>
-  <p style="color:#5a8090;font-size:13px;margin-bottom:40px;">功能开发中，敬请期待</p>
-  <a href="/">← 返回首页</a>
+
+<!-- 顶部工具栏 -->
+<header id="topbar">
+  <div class="tb-left">
+    <span class="logo">AITS <small>交叉口设计</small></span>
+    <button class="btn" id="btn-new" title="新建方案">📄 新建</button>
+    <button class="btn" id="btn-open" title="打开方案文件">📂 打开</button>
+    <button class="btn" id="btn-save" title="保存方案">💾 保存</button>
+  </div>
+  <div class="tb-center">
+    <label class="tb-label">交叉口名</label>
+    <input type="text" id="cross-name" value="交叉口设计方案1" class="tb-input">
+    <select id="sel-cross-type" class="tb-sel">
+      <option value="1">信号控制</option>
+      <option value="2">无控制</option>
+    </select>
+    <select id="sel-draw-type" class="tb-sel">
+      <option value="0">直接左转</option>
+      <option value="1">二次过街</option>
+    </select>
+    <button class="btn accent" id="btn-export-png">🖼️ 导出PNG</button>
+  </div>
+  <div class="tb-right">
+    <button class="btn" id="btn-zoom-in" title="放大">🔍+</button>
+    <button class="btn" id="btn-zoom-out" title="缩小">🔍-</button>
+    <button class="btn" id="btn-fit" title="适应窗口">⊡</button>
+  </div>
+</header>
+
+<!-- 主内容区 -->
+<div id="main-area">
+
+  <!-- 左侧工具栏 -->
+  <aside id="side-toolbar">
+    <button class="stb-btn active" data-mode="channel" title="渠化设计">
+      <span class="stb-icon">🏗️</span><span class="stb-label">渠化</span>
+    </button>
+    <button class="stb-btn" data-mode="lane-func" title="车道功能">
+      <span class="stb-icon">🚗</span><span class="stb-label">车道</span>
+    </button>
+    <button class="stb-btn" data-mode="flow" title="流量输入（待开发）">
+      <span class="stb-icon">📊</span><span class="stb-label">流量</span>
+    </button>
+    <button class="stb-btn" data-mode="signal" title="信号配时（待开发）">
+      <span class="stb-icon">🚦</span><span class="stb-label">配时</span>
+    </button>
+    <button class="stb-btn" data-mode="eval" title="交叉口评价（待开发）">
+      <span class="stb-icon">📈</span><span class="stb-label">评价</span>
+    </button>
+  </aside>
+
+  <!-- 中央绘图区 -->
+  <div id="canvas-container">
+    <canvas id="main-canvas"></canvas>
+    <!-- 车道功能浮动菜单 -->
+    <div id="lane-func-menu" class="popup-menu" style="display:none">
+      <div class="popup-title">车道功能</div>
+      <div class="popup-items" id="lane-func-items"></div>
+    </div>
+  </div>
+
+  <!-- 右侧信息面板 -->
+  <aside id="info-panel">
+    <!-- 方案信息 -->
+    <div class="panel-section">
+      <div class="panel-title">方案信息</div>
+      <div id="cross-info" class="info-grid">
+        <div class="info-item"><label>类型</label><span id="info-type">信号控制</span></div>
+        <div class="info-item"><label>道路数</label><span id="info-road-count">4</span></div>
+        <div class="info-item"><label>总车道</label><span id="info-total-lanes">--</span></div>
+      </div>
+    </div>
+
+    <!-- 道路列表 -->
+    <div class="panel-section">
+      <div class="panel-title">进口道路</div>
+      <div id="road-list" class="road-list"></div>
+    </div>
+
+    <!-- 车道详情 -->
+    <div class="panel-section">
+      <div class="panel-title">车道详情</div>
+      <div id="lane-detail" class="lane-detail">点击车道查看详情</div>
+    </div>
+
+    <!-- 颜色设置 -->
+    <div class="panel-section">
+      <div class="panel-title">配色方案</div>
+      <div id="color-picker" class="color-grid">
+        <div class="color-row"><label>背景</label><input type="color" id="clr-bg" value="#D8D8D8"></div>
+        <div class="color-row"><label>人行道</label><input type="color" id="clr-sidewalk" value="#E18160"></div>
+        <div class="color-row"><label>非机动车</label><input type="color" id="clr-nonmotor" value="#FAE2B4"></div>
+        <div class="color-row"><label>绿化</label><input type="color" id="clr-green" value="#569B00"></div>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<!-- 新建交叉口对话框 -->
+<div id="modal-new" class="modal" style="display:none">
+  <div class="modal-box">
+    <div class="modal-title">新建交叉口方案</div>
+    <div class="modal-body">
+      <div class="form-row">
+        <label>交叉口名称</label>
+        <input type="text" id="new-cross-name" value="交叉口设计方案1">
+      </div>
+      <div class="form-row">
+        <label>进口道数量</label>
+        <select id="new-road-count">
+          <option value="3">3（三叉口）</option>
+          <option value="4" selected>4（四叉口）</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>交叉口类型</label>
+        <select id="new-cross-type">
+          <option value="1">信号控制</option>
+          <option value="2">无控制</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>左转模式</label>
+        <select id="new-draw-type">
+          <option value="0">直接左转</option>
+          <option value="1">二次过街</option>
+        </select>
+      </div>
+    </div>
+    <div class="modal-ft">
+      <button class="btn" id="btn-modal-cancel">取消</button>
+      <button class="btn accent" id="btn-modal-ok">确定</button>
+    </div>
+  </div>
+</div>
+
+<script src="js/utils.js?v=1.5"></script>
+<script src="js/models.js?v=1.5"></script>
+<script src="js/geometry.js?v=1.5"></script>
+<script src="js/canvas-render.js?v=1.5"></script>
+<script src="js/app.js?v=1.5"></script>
 </body>
 </html>

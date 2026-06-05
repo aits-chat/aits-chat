@@ -1,0 +1,149 @@
+/* === 交叉口设计 - AITS 现代风格 === */
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body { height:100%; overflow:hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size:13px; color:#1a1a2e; background:#f0f2f5; }
+
+/* === Header === */
+#topbar {
+  display:flex; align-items:center; height:44px; padding:0 12px;
+  background:linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+  color:#e0e0e0; gap:16px; border-bottom:1px solid #333;
+}
+.tb-left, .tb-center, .tb-right { display:flex; align-items:center; gap:6px; }
+.tb-center { flex:1; justify-content:center; }
+.logo { font-size:15px; font-weight:700; color:#4fc3f7; letter-spacing:1px; white-space:nowrap; }
+.logo small { font-size:11px; color:#90a4ae; font-weight:400; margin-left:6px; }
+
+.btn {
+  padding:4px 10px; border:1px solid rgba(255,255,255,0.15); border-radius:5px;
+  background:rgba(255,255,255,0.06); color:#ccc; cursor:pointer; font-size:12px;
+  transition:all 0.15s; white-space:nowrap;
+}
+.btn:hover { background:rgba(255,255,255,0.12); color:#fff; border-color:rgba(255,255,255,0.3); }
+.btn.accent { background:#1976d2; border-color:#1976d2; color:#fff; }
+.btn.accent:hover { background:#1565c0; }
+
+.tb-label { font-size:11px; color:#90a4ae; white-space:nowrap; }
+.tb-input {
+  width:130px; padding:4px 8px; border-radius:5px; border:1px solid rgba(255,255,255,0.2);
+  background:rgba(255,255,255,0.08); color:#e0e0e0; font-size:12px; outline:none;
+}
+.tb-input:focus { border-color:#4fc3f7; }
+.tb-sel {
+  padding:4px 6px; border-radius:5px; border:1px solid rgba(255,255,255,0.2);
+  background:rgba(255,255,255,0.08); color:#e0e0e0; font-size:12px; outline:none; cursor:pointer;
+}
+
+/* === Main Area === */
+#main-area {
+  display:flex; height:calc(100vh - 44px);
+}
+
+/* === Left sidebar toolbar === */
+#side-toolbar {
+  width:54px; background:#fff; display:flex; flex-direction:column; align-items:center;
+  padding:8px 0; gap:2px; border-right:1px solid #e0e0e0; flex-shrink:0;
+}
+.stb-btn {
+  width:44px; height:44px; border:none; border-radius:8px; background:transparent;
+  cursor:pointer; display:flex; flex-direction:column; align-items:center;
+  justify-content:center; gap:1px; transition:all 0.12s; color:#666;
+}
+.stb-btn:hover { background:#e3f2fd; color:#1976d2; }
+.stb-btn.active { background:#1976d2; color:#fff; }
+.stb-icon { font-size:18px; line-height:1; }
+.stb-label { font-size:9px; line-height:1; }
+
+/* === Canvas Container === */
+#canvas-container {
+  flex:1; position:relative; overflow:hidden; background:#fafafa;
+  cursor:grab;
+}
+#canvas-container.grabbing { cursor:grabbing; }
+#canvas-container.lane-select { cursor:pointer; }
+#main-canvas { display:block; width:100%; height:100%; }
+
+/* === Popup menus === */
+.popup-menu {
+  position:absolute; background:#fff; border-radius:8px; box-shadow:0 4px 20px rgba(0,0,0,0.15);
+  min-width:120px; z-index:100; overflow:hidden;
+}
+.popup-title {
+  padding:8px 12px; font-size:11px; color:#888; border-bottom:1px solid #eee;
+  background:#f8f8f8;
+}
+.popup-items { padding:4px 0; }
+.popup-item {
+  display:block; width:100%; padding:7px 12px; border:none; background:transparent;
+  text-align:left; cursor:pointer; font-size:12px; color:#333; transition:background 0.1s;
+}
+.popup-item:hover { background:#e3f2fd; color:#1976d2; }
+.popup-item .picon { margin-right:6px; font-size:14px; }
+
+/* === Right Info Panel === */
+#info-panel {
+  width:260px; background:#fff; border-left:1px solid #e0e0e0; overflow-y:auto;
+  flex-shrink:0; padding:8px;
+}
+.panel-section {
+  margin-bottom:10px; border:1px solid #e8e8e8; border-radius:6px; overflow:hidden;
+}
+.panel-title {
+  padding:7px 10px; background:#f5f5f5; font-size:12px; font-weight:600;
+  color:#333; border-bottom:1px solid #e8e8e8;
+}
+.info-grid { padding:8px; }
+.info-item { display:flex; justify-content:space-between; padding:3px 0; font-size:12px; }
+.info-item label { color:#888; }
+.info-item span { font-weight:500; }
+
+.road-list { padding:4px; }
+.road-item {
+  padding:6px 8px; cursor:pointer; border-radius:4px; font-size:12px;
+  transition:background 0.1s; display:flex; align-items:center; gap:6px;
+}
+.road-item:hover { background:#e3f2fd; }
+.road-item.selected { background:#1976d2; color:#fff; }
+.road-icon { width:8px; height:8px; border-radius:50%; display:inline-block; }
+.road-name { flex:1; }
+.road-lanes { font-size:10px; opacity:0.7; }
+
+.lane-detail { padding:8px; font-size:11px; color:#888; min-height:40px; }
+.lane-detail .lane-func-tag {
+  display:inline-block; padding:2px 6px; border-radius:3px; font-size:10px;
+  background:#e3f2fd; color:#1976d2; margin:2px;
+}
+
+.color-grid { padding:8px; }
+.color-row { display:flex; align-items:center; gap:8px; padding:3px 0; font-size:11px; }
+.color-row label { flex:1; color:#666; }
+.color-row input[type="color"] {
+  width:28px; height:22px; border:1px solid #ddd; border-radius:3px; cursor:pointer; padding:0;
+}
+
+/* === Modal === */
+.modal {
+  position:fixed; inset:0; background:rgba(0,0,0,0.4); display:flex;
+  align-items:center; justify-content:center; z-index:200;
+}
+.modal-box {
+  background:#fff; border-radius:10px; width:360px; box-shadow:0 8px 30px rgba(0,0,0,0.2);
+}
+.modal-title { padding:14px 18px; font-size:15px; font-weight:600; border-bottom:1px solid #eee; }
+.modal-body { padding:18px; }
+.form-row { margin-bottom:12px; }
+.form-row label { display:block; margin-bottom:4px; font-size:12px; color:#666; }
+.form-row input, .form-row select {
+  width:100%; padding:7px 10px; border:1px solid #ddd; border-radius:5px;
+  font-size:13px; outline:none;
+}
+.form-row input:focus, .form-row select:focus { border-color:#1976d2; }
+.modal-ft {
+  display:flex; justify-content:flex-end; gap:8px; padding:12px 18px;
+  border-top:1px solid #eee;
+}
+
+/* === Scrollbars === */
+::-webkit-scrollbar { width:5px; }
+::-webkit-scrollbar-track { background:transparent; }
+::-webkit-scrollbar-thumb { background:#ccc; border-radius:3px; }
+::-webkit-scrollbar-thumb:hover { background:#aaa; }
