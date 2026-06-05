@@ -3,53 +3,120 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>横断面设计 — AITS</title>
-<style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
-    background: linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%);
-    min-height: 100vh;
-    color: #e0e0e0;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    padding: 20px;
-    text-align: center;
-  }
-  .icon { font-size: 72px; margin-bottom: 24px; }
-  h1 { font-size: 36px; font-weight: 300; letter-spacing: 6px; margin-bottom: 12px; color: #fff; }
-  .sub { color: #8ab4c8; font-size: 15px; margin-bottom: 40px; }
-  .progress {
-    width: 200px;
-    height: 4px;
-    background: rgba(255,255,255,0.1);
-    border-radius: 2px;
-    margin: 0 auto 30px;
-    overflow: hidden;
-  }
-  .progress-bar {
-    height: 100%;
-    width: 20%;
-    background: linear-gradient(90deg, #6ac8ff, #4a90d9);
-    border-radius: 2px;
-    animation: pulse 2s ease-in-out infinite;
-  }
-  @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.5; }
-  }
-  a { color: #6ac8ff; text-decoration: none; font-size: 14px; }
-  a:hover { text-decoration: underline; }
-</style>
+<title>横断面设计 - AITS 智能交通在线工具</title>
+<link rel="stylesheet" href="css/style.css">
 </head>
 <body>
-  <div class="icon">📐</div>
-  <h1>横断面设计</h1>
-  <p class="sub">道路横断面在线设计工具<br>车道宽度、分隔带、边坡、排水等要素集成</p>
-  <div class="progress"><div class="progress-bar"></div></div>
-  <p style="color:#5a8090;font-size:13px;margin-bottom:40px;">功能开发中，敬请期待</p>
-  <a href="/">← 返回首页</a>
+
+<!-- ========== 顶部工具栏 ========== -->
+<div id="toolbar">
+    <span class="brand">🚦 横断面设计</span>
+    <span class="toolbar-divider"></span>
+
+    <label>道路等级</label>
+    <select id="road-rank-select"></select>
+
+    <label>速度</label>
+    <input type="number" id="speed-input" value="50" min="20" max="120" step="10"> km/h
+
+    <label>车道数</label>
+    <select id="lane-count-select">
+        <option value="2">2</option>
+        <option value="4" selected>4</option>
+        <option value="6">6</option>
+        <option value="8">8</option>
+    </select>
+
+    <label>红线</label>
+    <input type="number" id="redline-input" value="40" min="12" max="120" step="0.5"> m
+
+    <button class="toolbar-btn primary" id="btn-generate">生成断面</button>
+
+    <span class="toolbar-divider"></span>
+
+    <span class="info-text">总宽: <span class="val" id="total-width-display">0.00</span> m</span>
+    <span class="info-text">道路名称</span>
+    <input type="text" id="road-name-input" value="" maxlength="16" placeholder="输入道路名称">
+
+    <span class="toolbar-divider"></span>
+
+    <button class="toolbar-btn" id="btn-center" title="居中显示">居中</button>
+    <button class="toolbar-btn" id="btn-style" title="切换风格">风格</button>
+    <button class="toolbar-btn" id="btn-toggle-dim" title="显示/隐藏标注">标注</button>
+    <button class="toolbar-btn" id="btn-export-png">导出PNG</button>
+    <button class="toolbar-btn" id="btn-save">保存</button>
+    <button class="toolbar-btn" id="btn-load">打开</button>
+    <button class="toolbar-btn danger" id="btn-delete" title="删除选中元素(Del)">删除</button>
+</div>
+
+<!-- ========== 主内容区 ========== -->
+<div id="main-container">
+
+    <!-- 左侧：添加元素面板 -->
+    <div id="side-panel">
+        <button class="add-btn" data-ele="car" title="标准车道">
+            <span class="icon">🚗</span><span class="label">车道</span>
+        </button>
+        <button class="add-btn" data-ele="bus" title="公交车道">
+            <span class="icon">🚌</span><span class="label">公交</span>
+        </button>
+        <button class="add-btn" data-ele="truck" title="大车道">
+            <span class="icon">🚛</span><span class="label">大车</span>
+        </button>
+        <button class="add-btn" data-ele="tramcar" title="有轨电车">
+            <span class="icon">🚋</span><span class="label">电车</span>
+        </button>
+        <button class="add-btn" data-ele="pedestrian" title="人行道">
+            <span class="icon">🚶</span><span class="label">人行</span>
+        </button>
+        <button class="add-btn" data-ele="bicycle" title="非机动车道">
+            <span class="icon">🚲</span><span class="label">非机</span>
+        </button>
+        <button class="add-btn" data-ele="busstop" title="公交站">
+            <span class="icon">🚏</span><span class="label">站台</span>
+        </button>
+        <button class="add-btn" data-ele="isobelt" title="隔离带">
+            <span class="icon">🌿</span><span class="label">隔离</span>
+        </button>
+        <button class="add-btn" data-ele="overpass" title="高架">
+            <span class="icon">🌉</span><span class="label">高架</span>
+        </button>
+        <button class="add-btn" data-ele="water" title="河水">
+            <span class="icon">💧</span><span class="label">河流</span>
+        </button>
+        <button class="add-btn" data-ele="park" title="停车带">
+            <span class="icon">🅿️</span><span class="label">停车</span>
+        </button>
+    </div>
+
+    <!-- 中间：Canvas画布 -->
+    <div id="canvas-wrapper">
+        <canvas id="main-canvas"></canvas>
+    </div>
+
+    <!-- 右侧：属性面板 -->
+    <div id="prop-panel">
+        <h3>元素属性</h3>
+        <div id="prop-content">
+            <div class="no-selection">点击选中断面元素</div>
+        </div>
+    </div>
+
+</div>
+
+<!-- ========== 状态栏 ========== -->
+<div id="statusbar">
+    <span>缩放: <span id="zoom-display">100</span>%</span>
+    <span>坐标: <span class="coord" id="coord-display">-</span></span>
+    <span>按 <span class="key-hint">滚轮</span> 缩放 · <span class="key-hint">拖拽</span> 平移 · <span class="key-hint">Del</span> 删除</span>
+    <span style="margin-left:auto">AITS 智能交通工具集 v2.1</span>
+</div>
+
+<!-- ========== 隐藏的文件输入 ========== -->
+<input type="file" id="file-input" accept=".json" style="display:none">
+
+<script src="js/models.js"></script>
+<script src="js/canvas-render.js"></script>
+<script src="js/main.js"></script>
 </body>
 </html>
