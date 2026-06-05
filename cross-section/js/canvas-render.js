@@ -336,7 +336,7 @@ class CrossSectionRenderer {
       const img = this.cache.get(hi.src);
       const hw = Math.min(hi.width * 0.15, endX - curX - 5, 180);
       const hh = hw * 0.8;
-      const hy = CFG.ROAD_Y - hh - px(model?.sideViewHeight || 0) - 5;
+      const hy = CFG.ROAD_Y - hh - 0 - 5;
       
       if (img && img.complete && img.naturalWidth > 0) {
         ctx.drawImage(img, curX, hy - 30, hw, hh + 30);
