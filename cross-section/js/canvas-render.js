@@ -129,10 +129,10 @@ class CrossSectionRenderer {
     this.cache.load(B + 'style1/ElementImage/Bush/0.png');
     this.cache.load(B + 'style1/ElementImage/Lamp/0.png');
     this.cache.load(B + 'style1/ElementImage/Barrier/0.png');
-    // 车辆元素 (style0 + style1)
+    // 车辆元素 (style0用子目录0.png，style1直接用png)
     ['Car','Bus','Truck','Tramcar'].forEach(v => {
       ['In','Out'].forEach(dir => {
-        this.cache.load(B + 'style0/ElementImage/' + v + dir + '.png');
+        this.cache.load(B + 'style0/ElementImage/' + v + dir + '/0.png');
         this.cache.load(B + 'style1/ElementImage/' + v + dir + '.png');
       });
     });
@@ -524,10 +524,11 @@ class CrossSectionRenderer {
 
   _drawSingleVehicle(x, elW, surfY, surfaceH, imgKey, el) {
     const ctx = this.ctx;
-    // 尝试使用原版图片
+    // 尝试使用原版图片 (style0用子目录，style1直接用png)
     const B = CFG.BASE_PATH;
     const styleDir = this.styleId === 0 ? 'style0' : 'style1';
-    const imgPath = B + styleDir + '/ElementImage/' + imgKey + '.png';
+    const subPath = this.styleId === 0 ? '/0' : '';
+    const imgPath = B + styleDir + '/ElementImage/' + imgKey + subPath + '.png';
     const img = this.cache.get(imgPath);
     
     if (img && img.complete && img.naturalWidth > 0) {
