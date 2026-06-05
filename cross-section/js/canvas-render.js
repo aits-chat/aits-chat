@@ -349,14 +349,15 @@ class CrossSectionRenderer {
       hIdx++;
     }
 
-    // 建筑底部到路面之间的绿化带
-    const treeBaseY = CFG.ROAD_Y - 28;
-    for (let tx = fromX + 10; tx < toX - 20; tx += 30 + Math.random() * 25) {
-      const treeH = 30 + Math.random() * 35;
-      this._drawTree(tx, treeBaseY, treeH * 0.18, treeH * 0.32);
+    // 建筑底部到路面之间的绿化带（模拟原版路边景观树）
+    const treeBaseY = CFG.ROAD_Y - 4; // 紧贴路面顶部
+    for (let tx = fromX + 15; tx < toX - 20; tx += 35 + Math.random() * 30) {
+      const crownR = 14 + Math.random() * 20;
+      this._drawTree(tx, treeBaseY, crownR * 0.22, crownR);
     }
-    ctx.fillStyle = 'rgba(143, 188, 143, 0.3)';
-    ctx.fillRect(fromX, CFG.ROAD_Y - 22, availW, 22);
+    // 路边细窄草地带
+    ctx.fillStyle = 'rgba(120, 170, 120, 0.35)';
+    ctx.fillRect(fromX, CFG.ROAD_Y - 14, availW, 14);
   }
 
   _drawSimpleBuilding(x, y, w, h) {
@@ -595,8 +596,10 @@ class CrossSectionRenderer {
     
     for (let i = 0; i < count; i++) {
       const px2 = x + interval * i + interval / 2;
-      const py = surfY - surfaceH * 1.3;
-      this._drawStickFigure(px2, py, surfaceH * 0.7);
+      // 行人脚底贴路面：py + size*0.4 = surfY → py = surfY - size*0.4
+      const size = surfaceH * 0.7;
+      const py = surfY - size * 0.4;
+      this._drawStickFigure(px2, py, size);
     }
   }
 
@@ -639,25 +642,32 @@ class CrossSectionRenderer {
     
     for (let i = 0; i < count; i++) {
       const bx = x + interval * i + interval / 2;
-      const by = surfY - surfaceH * 1.1;
+      // 车轮底部贴路面
+      const by = surfY;
       const bw = 20, bh = 14;
       
       // 简化自行车
       ctx.strokeStyle = '#555';
       ctx.lineWidth = 1.2;
-      // 车轮
+      // 车轮（圆心在 by - 半径处）
+      const wheelR = bh * 0.45;
       ctx.beginPath();
-      ctx.arc(bx - bw * 0.3, by, bh * 0.45, 0, Math.PI * 2);
-      ctx.arc(bx + bw * 0.3, by, bh * 0.45, 0, Math.PI * 2);
+      ctx.arc(bx - bw * 0.3, by - wheelR, wheelR, 0, Math.PI * 2);
+      ctx.arc(bx + bw * 0.3, by - wheelR, wheelR, 0, Math.PI * 2);
       ctx.stroke();
       // 车架
       ctx.beginPath();
-      ctx.moveTo(bx - bw * 0.3, by);
-      ctx.lineTo(bx, by - bh * 0.5);
-      ctx.lineTo(bx + bw * 0.3, by);
-      ctx.moveTo(bx, by - bh * 0.5);
-      ctx.lineTo(bx, by + bh * 0.2);
+      ctx.moveTo(bx - bw * 0.3, by - wheelR);
+      ctx.lineTo(bx, by - bh * 0.8);
+      ctx.lineTo(bx + bw * 0.3, by - wheelR);
+      ctx.moveTo(bx, by - bh * 0.8);
+      ctx.lineTo(bx, by - bh * 0.15);
       ctx.stroke();
+      // 骑行者（简化）
+      ctx.fillStyle = '#FFD699';
+      ctx.beginPath();
+      ctx.arc(bx, by - bh * 1.1, bh * 0.18, 0, Math.PI * 2);
+      ctx.fill();
     }
   }
 
@@ -665,27 +675,29 @@ class CrossSectionRenderer {
     const ctx = this.ctx;
     const isoType = el.isoType || 11;
     
-    // 灌木（所有隔离带都有，间距较小）
-    const bushCount = Math.floor(elW / 30);
+    // 灌木（所有隔离带都有，间距适中）
+    const bushCount = Math.max(1, Math.floor(elW / 38));
+    const bushR = surfaceH * 0.3;
     for (let i = 0; i < bushCount; i++) {
       const bx = x + (i + 0.5) * elW / bushCount;
+      // 灌木底部贴路面
       ctx.fillStyle = '#2E7D32';
       ctx.beginPath();
-      ctx.arc(bx, surfY - surfaceH * 1.6, surfaceH * 0.35, 0, Math.PI * 2);
+      ctx.arc(bx, surfY - bushR * 0.5, bushR, 0, Math.PI * 2);
       ctx.fill();
       ctx.fillStyle = '#43A047';
       ctx.beginPath();
-      ctx.arc(bx + 3, surfY - surfaceH * 1.7, surfaceH * 0.25, 0, Math.PI * 2);
+      ctx.arc(bx + bushR * 0.2, surfY - bushR * 0.7, bushR * 0.7, 0, Math.PI * 2);
       ctx.fill();
     }
     
     // 树木（大多数隔离带都有）
     const hasTree = [11, 12, 13, 15].includes(isoType);
     if (hasTree && elW > px(0.5)) {
-      const treeCount = Math.max(1, Math.floor(elW / 120));
+      const treeCount = Math.max(1, Math.floor(elW / 130));
       for (let i = 0; i < treeCount; i++) {
         const tx = x + (i + 0.5) * elW / treeCount;
-        this._drawTree(tx, surfY, 4, 18);
+        this._drawTree(tx, surfY, 3.5, 16);
       }
     }
     
@@ -693,10 +705,10 @@ class CrossSectionRenderer {
     if (isoType === 13) {
       const lampX = el.direction === 'In' ? x + elW * 0.3 : x + elW * 0.7;
       ctx.fillStyle = '#555';
-      ctx.fillRect(lampX - 1.5, surfY - surfaceH * 3, 3, surfaceH * 3);
+      ctx.fillRect(lampX - 1.5, surfY - surfaceH * 2.5, 3, surfaceH * 2.5);
       ctx.fillStyle = '#FFD700';
       ctx.beginPath();
-      ctx.arc(lampX, surfY - surfaceH * 3.2, 6, 0, Math.PI * 2);
+      ctx.arc(lampX, surfY - surfaceH * 2.7, 5, 0, Math.PI * 2);
       ctx.fill();
     }
     
@@ -704,7 +716,7 @@ class CrossSectionRenderer {
     if (el.hasBarrier) {
       ctx.strokeStyle = '#8B7355';
       ctx.lineWidth = 2;
-      const by = surfY - surfaceH * 2;
+      const by = surfY - surfaceH * 1.6;
       ctx.beginPath();
       ctx.moveTo(x + 5, by);
       ctx.lineTo(x + elW - 5, by);
@@ -712,7 +724,7 @@ class CrossSectionRenderer {
       // 立柱
       for (let bx = x + 10; bx < x + elW - 10; bx += 20) {
         ctx.fillStyle = '#8B7355';
-        ctx.fillRect(bx - 1, by - 5, 2, 10);
+        ctx.fillRect(bx - 1, by - 3, 2, 8);
       }
     }
   }
@@ -966,7 +978,8 @@ class CrossSectionRenderer {
   // ======== 尺寸标注 ========
   _drawDimensions(model, roadLeft, roadRight) {
     const ctx = this.ctx;
-    const dimY = CFG.ROAD_Y - px(2); // 标注线位置（路面上方2m）
+    const dimY = CFG.ROAD_Y + px(0.8); // 标注线位置（路面下方0.8m）
+    const bracketTop = CFG.ROAD_Y;     // 标注竖线从路面顶部开始
     const elements = model.elements;
     
     let curX = roadLeft;
@@ -975,29 +988,29 @@ class CrossSectionRenderer {
       const elW = px(el.width);
       const labelX = curX + elW / 2;
       
-      // 标注竖线
-      ctx.strokeStyle = '#393939';
+      // 标注竖线（从路面顶向下到标注线）
+      ctx.strokeStyle = '#555';
       ctx.lineWidth = 1;
       
       // 左竖线
       ctx.beginPath();
-      ctx.moveTo(curX, dimY);
-      ctx.lineTo(curX, CFG.ROAD_Y);
+      ctx.moveTo(curX, bracketTop);
+      ctx.lineTo(curX, dimY + 6);
       ctx.stroke();
       
       // 右竖线
       ctx.beginPath();
-      ctx.moveTo(curX + elW, dimY);
-      ctx.lineTo(curX + elW, CFG.ROAD_Y);
+      ctx.moveTo(curX + elW, bracketTop);
+      ctx.lineTo(curX + elW, dimY + 6);
       ctx.stroke();
       
-      // 斜线标记
-      const slashSize = 4;
+      // 标注线两端短斜线
+      const slashSize = 5;
       ctx.beginPath();
       ctx.moveTo(curX, dimY);
-      ctx.lineTo(curX + slashSize, dimY + slashSize);
+      ctx.lineTo(curX + slashSize, dimY + slashSize * 0.8);
       ctx.moveTo(curX + elW, dimY);
-      ctx.lineTo(curX + elW - slashSize, dimY + slashSize);
+      ctx.lineTo(curX + elW - slashSize, dimY + slashSize * 0.8);
       ctx.stroke();
       
       // 水平标注线
@@ -1006,29 +1019,23 @@ class CrossSectionRenderer {
       ctx.lineTo(curX + elW, dimY);
       ctx.stroke();
       
-      // 宽度标签
+      // 宽度标签（标注线下方）
       ctx.fillStyle = '#393939';
       ctx.font = '11px sans-serif';
       ctx.textAlign = 'center';
       const label = el.width.toFixed(2);
-      const textWidth = ctx.measureText(label).width;
-      
-      if (textWidth < elW) {
-        ctx.fillText(label, labelX, dimY - 6);
-      } else {
-        ctx.fillText(label, labelX, dimY + 16);
-      }
+      ctx.fillText(label, labelX, dimY + 18);
       
       curX += elW;
     }
     
-    // 总宽标注
+    // 总宽标注（在所有分段标注下方）
     const totalW = roadRight - roadLeft;
-    ctx.fillStyle = '#000';
+    ctx.fillStyle = '#222';
     ctx.font = 'bold 11px sans-serif';
     ctx.textAlign = 'center';
-    const totalLabel = '总宽 ' + mp(totalW).toFixed(2) + 'm';
-    ctx.fillText(totalLabel, roadLeft + totalW / 2, dimY + 35);
+    const totalLabel = mp(totalW).toFixed(2) + 'm';
+    ctx.fillText(totalLabel, roadLeft + totalW / 2, dimY + 38);
   }
 
   // ======== 水印 ========
