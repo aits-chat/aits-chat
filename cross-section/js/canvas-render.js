@@ -423,6 +423,7 @@ class CrossSectionRenderer {
     const ctx = this.ctx;
     const groundY = CFG.ROAD_Y;
     const baseH = CFG.BASE_EXTRA;
+    const fillH = Math.max(baseH, this.logicalH - groundY);
 
     // 路面下方地基（渐变）
     const grad = ctx.createLinearGradient(0, groundY, 0, groundY + baseH);
@@ -432,14 +433,20 @@ class CrossSectionRenderer {
     ctx.fillStyle = grad;
     ctx.fillRect(roadLeft, groundY, roadPxW, baseH);
 
+    // 地基以下延伸区（用同色填充到底部）
+    if (fillH > baseH) {
+      ctx.fillStyle = '#C8C0B0';
+      ctx.fillRect(roadLeft, groundY + baseH, roadPxW, fillH - baseH);
+    }
+
     // 路面底部暗色带
     ctx.fillStyle = '#4A4A4A';
     ctx.fillRect(roadLeft, groundY, roadPxW, 6);
 
-    // 两侧地基
+    // 两侧地基（延伸到全部所需高度）
     ctx.fillStyle = CFG.COLOR_GROUND;
-    ctx.fillRect(0, groundY, roadLeft, baseH);
-    ctx.fillRect(roadRight, groundY, this.logicalW - roadRight, baseH);
+    ctx.fillRect(0, groundY, roadLeft, fillH);
+    ctx.fillRect(roadRight, groundY, this.logicalW - roadRight, fillH);
   }
 
   // ======== 道路元素 ========
