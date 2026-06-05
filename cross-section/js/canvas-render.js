@@ -45,13 +45,13 @@ class ImageCache {
 // ============ 配置常量 ============
 const CFG = {
   SCALE: 16,            // 像素/米
-  ROAD_Y: 420,          // 路面线Y坐标
-  SIDE_WIDTH: 280,      // 侧边景观带宽度(px)
+  ROAD_Y: 500,          // 路面线Y坐标（下调，让路靠下）
+  SIDE_WIDTH: 320,      // 侧边景观带宽度(px)（加宽，容纳更大建筑）
   SKY_TOP: 0,           // 天空顶部
-  BUILDING_Y: 120,      // 建筑起始Y
-  BUILDING_HEIGHT: 300, // 建筑区域高度
-  BASE_EXTRA: 200,      // 地基下方延伸
-  PADDING: 100,         // 画布内边距
+  BUILDING_Y: 30,       // 建筑起始Y（上调，建筑从头开始）
+  BUILDING_HEIGHT: 400, // 建筑区域高度
+  BASE_EXTRA: 80,       // 地基下方延伸（缩窄，路下不要太多空地）
+  PADDING: 60,          // 画布内边距
   
   // 颜色
   COLOR_SKY_TOP: '#4A90D9',
@@ -257,13 +257,14 @@ class CrossSectionRenderer {
       const drawH = (imgH / imgW) * drawW; // 保持比例
       ctx.drawImage(skyImg, 0, 0, drawW, Math.min(drawH, this.logicalH));
     } else {
-      // 后备：渐变天空 + 云朵
-      const grad = ctx.createLinearGradient(0, 0, 0, CFG.ROAD_Y);
+      // 后备：渐变天空，覆盖全画布以免底部空白
+      const grad = ctx.createLinearGradient(0, 0, 0, this.logicalH);
       grad.addColorStop(0, CFG.COLOR_SKY_TOP);
-      grad.addColorStop(0.6, '#87CEEB');
-      grad.addColorStop(1, CFG.COLOR_SKY_BOT);
+      grad.addColorStop(0.5, '#87CEEB');
+      grad.addColorStop(0.85, CFG.COLOR_SKY_BOT);
+      grad.addColorStop(1, '#D0C8BC');
       ctx.fillStyle = grad;
-      ctx.fillRect(0, 0, this.logicalW, CFG.ROAD_Y);
+      ctx.fillRect(0, 0, this.logicalW, this.logicalH);
       
       // 简单云朵
       ctx.fillStyle = 'rgba(255,255,255,0.7)';
@@ -334,20 +335,28 @@ class CrossSectionRenderer {
     while (curX < endX - 30 && hIdx < houses.length) {
       const hi = houses[hIdx];
       const img = this.cache.get(hi.src);
-      const hw = Math.min(hi.width * 0.15, endX - curX - 5, 180);
-      const hh = hw * 0.8;
-      const hy = CFG.ROAD_Y - hh - 0 - 5;
-      
+      const hw = Math.min(hi.width * 0.28, endX - curX - 5, 240);
+      const hh = hw * 1.05;
+      const hy = CFG.ROAD_Y - hh - 5;
+
       if (img && img.complete && img.naturalWidth > 0) {
-        ctx.drawImage(img, curX, hy - 30, hw, hh + 30);
+        ctx.drawImage(img, curX, hy - 20, hw, hh + 20);
       } else {
-        // 后备：简易建筑
         this._drawSimpleBuilding(curX, hy, hw, hh);
       }
-      
+
       curX += hw + 8;
       hIdx++;
     }
+
+    // 建筑底部到路面之间的绿化带
+    const treeBaseY = CFG.ROAD_Y - 28;
+    for (let tx = fromX + 10; tx < toX - 20; tx += 30 + Math.random() * 25) {
+      const treeH = 30 + Math.random() * 35;
+      this._drawTree(tx, treeBaseY, treeH * 0.18, treeH * 0.32);
+    }
+    ctx.fillStyle = 'rgba(143, 188, 143, 0.3)';
+    ctx.fillRect(fromX, CFG.ROAD_Y - 22, availW, 22);
   }
 
   _drawSimpleBuilding(x, y, w, h) {
@@ -414,7 +423,6 @@ class CrossSectionRenderer {
     const ctx = this.ctx;
     const groundY = CFG.ROAD_Y;
     const baseH = CFG.BASE_EXTRA;
-    const totalH = this.logicalH - groundY; // 地面以下全部高度
 
     // 路面下方地基（渐变）
     const grad = ctx.createLinearGradient(0, groundY, 0, groundY + baseH);
@@ -424,21 +432,14 @@ class CrossSectionRenderer {
     ctx.fillStyle = grad;
     ctx.fillRect(roadLeft, groundY, roadPxW, baseH);
 
-    // 地基以下延伸区域（填充到画布底部）
-    const extraH = totalH - baseH;
-    if (extraH > 0) {
-      ctx.fillStyle = '#C8C0B0';
-      ctx.fillRect(roadLeft, groundY + baseH, roadPxW, extraH);
-    }
-
     // 路面底部暗色带
     ctx.fillStyle = '#4A4A4A';
     ctx.fillRect(roadLeft, groundY, roadPxW, 6);
 
-    // 两侧地基（延伸到画布底部）
+    // 两侧地基
     ctx.fillStyle = CFG.COLOR_GROUND;
-    ctx.fillRect(0, groundY, roadLeft, totalH);
-    ctx.fillRect(roadRight, groundY, this.logicalW - roadRight, totalH);
+    ctx.fillRect(0, groundY, roadLeft, baseH);
+    ctx.fillRect(roadRight, groundY, this.logicalW - roadRight, baseH);
   }
 
   // ======== 道路元素 ========
